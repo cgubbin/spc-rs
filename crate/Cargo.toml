@@ -1,0 +1,9 @@
+[package]
+name = "spc-parse"
+version = "0.1.0"
+edition = "2021"
+authors = ["Christopher Gubbin <cgubbin@sensoriumtl.com>"]
+exclude = [".github/", "/ci/"]
+
+[dependencies]
+thiserror = "1"
