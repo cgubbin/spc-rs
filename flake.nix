@@ -170,6 +170,7 @@
             pkgs.vscode-extensions.vadimcn.vscode-lldb
             fenix-pkgs.rust-analyzer
             pkgs.cargo-expand
+            pkgs.hexyl
           ];
 
           shellHook = ''
