@@ -3,7 +3,7 @@ use clap::Parser;
 use fs_err::File;
 use miette::{Context, IntoDiagnostic};
 
-use spc_parse::{parse, write_spc};
+use spc_rs::{parse, write_spc};
 
 #[derive(Debug, Parser)]
 struct Args {

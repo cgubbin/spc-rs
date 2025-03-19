@@ -380,7 +380,13 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
         let z_type_year = self.read_u16()?;
         let z_unit_type = xzwType::new((z_type_year >> 12) as u8).unwrap();
 
-        let year = z_type_year & 0x0fff;
+        println!("z_type_year: {}", z_type_year);
+        // let year = z_type_year & 0x0fff;
+        // let year = z_type_year & 0xf000;
+
+        // This seems to not be good if we lop the bits off..
+        let year = z_type_year;
+        println!("year: {}", year);
 
         // The datetime is only available if the year is non-zero
         let datetime = if year == 0 {
@@ -425,7 +431,7 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
 
     // Old format datetimes are stored in 4 consecutive bits following the year
     fn parse_old_format_datetime(&mut self, year: u16) -> Result<DateTime<Utc>, HeaderParseError> {
-        let month = self.read_byte()?.wrapping_sub(1);
+        let month = self.read_byte()?.max(1); //.wrapping_sub(1);
         let date = self.read_byte()?;
         let hours = self.read_byte()?;
         let minutes = self.read_byte()?;
@@ -446,13 +452,17 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
                 hours,
                 minutes,
             }),
-            LocalResult::Ambiguous(_, _) => Err(HeaderParseError::Datetime {
-                year,
-                month,
-                date,
-                hours,
-                minutes,
-            }),
+            LocalResult::Ambiguous(a, b) => {
+                dbg!(a, b);
+
+                Err(HeaderParseError::Datetime {
+                    year,
+                    month,
+                    date,
+                    hours,
+                    minutes,
+                })
+            }
         }
     }
 
