@@ -1,5 +1,11 @@
 use crate::SPCFile;
 
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub(crate) enum LogBlockParseError {
+    #[error("Premature termination of binary input")]
+    PrematureTermination,
+}
+
 pub(crate) struct LogBlockParser<'a, 'de>(pub(crate) &'a mut SPCFile<'de>);
 
 #[derive(Clone, Debug)]
@@ -20,24 +26,34 @@ struct LogHeader {
 }
 
 impl<'a, 'de> LogBlockParser<'a, 'de> {
-    pub(crate) fn parse(&mut self, log_offset: usize) -> miette::Result<LogBlock> {
+    fn read_u32(&mut self) -> Result<u32, LogBlockParseError> {
+        self.0
+            .read_u32()
+            .ok_or(LogBlockParseError::PrematureTermination)
+    }
+
+    fn read_unescaped_utf8(&mut self, size: usize) -> Result<&'de str, LogBlockParseError> {
+        self.0
+            .read_unescaped_utf8(size)
+            .ok_or(LogBlockParseError::PrematureTermination)
+    }
+
+    pub(crate) fn parse(&mut self, log_offset: usize) -> Result<LogBlock, LogBlockParseError> {
         let header = LogHeader {
-            size: self.0.read_u32(),
-            memory_size: self.0.read_u32(),
-            text_offset: self.0.read_u32(),
-            binary_size: self.0.read_u32(),
-            disk_area: self.0.read_u32(),
-            reserved: self.0.read_unescaped_utf8(44).trim().to_string(),
+            size: self.read_u32()?,
+            memory_size: self.read_u32()?,
+            text_offset: self.read_u32()?,
+            binary_size: self.read_u32()?,
+            disk_area: self.read_u32()?,
+            reserved: self.read_unescaped_utf8(44)?.trim().to_string(),
         };
 
         let log_data = self
-            .0
-            .read_unescaped_utf8(header.binary_size as usize)
+            .read_unescaped_utf8(header.binary_size as usize)?
             .to_string();
         self.0.goto(log_offset + header.text_offset as usize);
         let log_ascii = self
-            .0
-            .read_unescaped_utf8(header.size as usize - header.text_offset as usize)
+            .read_unescaped_utf8(header.size as usize - header.text_offset as usize)?
             .trim()
             .to_string();
 

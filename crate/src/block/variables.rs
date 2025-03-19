@@ -27,9 +27,15 @@ impl FromTo {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct MeasurementXYVariables {
+pub(crate) struct MeasurementXYVariables {
     x: Variable,
     y: Variable,
+}
+
+impl MeasurementXYVariables {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&f64, &f64)> {
+        self.x.data.iter().zip(self.y.data.iter())
+    }
 }
 
 impl MeasurementXYVariables {
