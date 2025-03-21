@@ -1,3 +1,11 @@
+/// A subfile-header preceeds an individual trace in a multi-type file. For evenly spaced files
+/// the subtime (z) and subnext (next_z) are ignored for all except the first subfile. In this case
+/// the spacing defined by the first subfile determines the z-spacing for all files.
+///
+/// In ordered and random multi-files subnext normally matches subtime but for all types the
+/// subindx must be correct. The [`Subheader`] is always required even if there is only one
+/// subfile, but if TMULTI is not set in the main header the exponent set in the subheader is
+/// ignored in favour of that in the header.
 use crate::SPCFile;
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -8,20 +16,40 @@ pub(crate) enum SubHeaderParseError {
     ReservedFieldsNotZero,
 }
 
+/// [`SubFlagParameters`] are stored in the first byte of the [`Subheader`]
+///
+/// Only 3 of the 8-bits are in use. From least to most significant these are
+/// - Bit 0: Indicates if the subfile changed
+/// - Bit 3: Indicates if the peak table file should not be used
+/// - Bit 7: Indicates if the subfile was modified by arithmetic
 #[derive(Clone, Debug)]
 struct SubFlagParameters(u8);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Subheader {
     parameters: SubFlagParameters,
+    /// The exponent of the Y axis for the sub-file
+    ///
+    /// If the exponent is equal to 80h, then the values are to be interpreted directly as floating
+    /// point data. If not the float values are reconstructed as
+    /// - FloatY = (2^ExponentY) * IntY / (2^32)
+    /// - FloatY = (2^ExponentY) * IntY / (2^16)
+    /// Depending on the whether the data is 16 or 32 bit according to the flag parameters.
     pub(crate) exponent_y: i8,
+    /// The integer index number of the trace subfile, where 0 refers to the first
     index_number: u16,
-    starting_z: f32,
-    ending_z: f32,
-    noise_value: f32,
+    /// The z-axis coordinate for this trace
+    z: f32,
+    /// The z-axis coordinate for the next trace
+    next_z: f32,
+    /// The floating peak pick noise value, if the high byte is nonzero
+    noise: f32,
+    /// The integer number of subfile points for TXYXYS types
     number_points: u32,
-    number_co_added_scans: u32,
-    w_axis_value: f32,
+    /// The integer number of co-added scans
+    scan: u32,
+    /// The value of the floating w-axis (if fwplanes is non-zero)
+    w_level: f32,
 }
 
 pub(crate) struct SubHeaderParser<'a, 'de>(pub(crate) &'a mut SPCFile<'de>);
@@ -69,12 +97,12 @@ impl<'a, 'de> SubHeaderParser<'a, 'de> {
         let parameters = SubFlagParameters(self.read_byte()?);
         let exponent_y = self.read_i8()?;
         let index_number = self.read_u16()?;
-        let starting_z = self.read_f32()?;
-        let ending_z = self.read_f32()?;
-        let noise_value = self.read_f32()?;
+        let z = self.read_f32()?;
+        let next_z = self.read_f32()?;
+        let noise = self.read_f32()?;
         let number_points = self.read_u32()?;
-        let number_co_added_scans = self.read_u32()?;
-        let w_axis_value = self.read_f32()?;
+        let scan = self.read_u32()?;
+        let w_level = self.read_f32()?;
 
         for _ in 0..4 {
             let each = self.read_byte()?;
@@ -89,12 +117,12 @@ impl<'a, 'de> SubHeaderParser<'a, 'de> {
             parameters,
             exponent_y,
             index_number,
-            starting_z,
-            ending_z,
-            noise_value,
+            z,
+            next_z,
+            noise,
             number_points,
-            number_co_added_scans,
-            w_axis_value,
+            scan,
+            w_level,
         })
     }
 }

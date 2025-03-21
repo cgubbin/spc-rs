@@ -7,9 +7,7 @@ pub(crate) use flags::DataShape;
 use miette::Diagnostic;
 pub(crate) use subheader::{SubHeaderParseError, SubHeaderParser, Subheader};
 
-use crate::{
-    parse::Endian, units::InstrumentTechnique, xzwType, yType, ExperimentSettings, SPCFile,
-};
+use crate::{parse::Endian, xzwType, yType, InstrumentTechnique, SPCFile};
 use flags::FlagParameters;
 
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
