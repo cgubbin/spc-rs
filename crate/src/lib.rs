@@ -14,7 +14,7 @@ mod write;
 use header::{Header, NewFormatHeader, OldFormatHeader};
 use log::{LogBlock, LogBlockParser};
 use parse::SPCFile;
-use units::{xzwType, yType, ExperimentSettings};
+use units::{xzwType, yType, InstrumentTechnique};
 use write::{CsvWriter, WriteSPC};
 
 #[derive(Clone, Debug)]

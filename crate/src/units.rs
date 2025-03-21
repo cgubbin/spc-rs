@@ -1,51 +1,44 @@
-// case 1:
-//       return 'Gas Chromatogram';
-//     case 2:
-//       return 'General Chromatogram (same as SPCGEN with TCGRAM)';
-//     case 3:
-//       return 'HPLC Chromatogram';
-//     case 4:
-//       return 'FT-IR, FT-NIR, FT-Raman Spectrum or Igram (Can also be used for scanning IR.)';
-//     case 5:
-//       return 'NIR Spectrum (Usually multi-spectral data sets for calibration.)';
-//     case 7:
-//       return 'UV-VIS Spectrum (Can be used for single scanning UV-VIS-NIR.)';
-//     case 8:
-//       return 'X-ray Diffraction Spectrum';
-//     case 9:
-//       return 'Mass Spectrum  (Can be single, GC-MS, Continuum, Centroid or TOF.)';
-//     case 10:
-//       return 'NMR Spectrum or FID';
-//     case 11:
-//       return 'Raman Spectrum (Usually Diode Array, CCD, etc. use SPCFTIR for FT-Raman.)';
-//     case 12:
-//       return 'Fluorescence Spectrum';
-//     case 13:
-//       return 'Atomic Spectrum';
-//     case 14:
-//       return 'Chromatography Diode Array Spectra';
-//     default:
-//       return 'General SPC (could be anything)';
-//
+/// The [`InstrumentTechnique`] represents all the possible values taken by the third byte in a new
+/// style header
+///
+/// This refers to the instrument technique code. Note that in older software packages the TCGRAM
+/// flag in [`FlagParameters`] must be set when fexpr is non-zero. When TCGRAM is set, a general
+/// chromatagraph is specified by a zero field
 #[derive(Copy, Clone, Debug)]
-pub(crate) enum ExperimentSettings {
+pub(crate) enum InstrumentTechnique {
+    /// A general SPC file, which could be anything at all
     GeneralSPC = 0x00,
+    /// A gas chromatogram
     GasChromatogram = 0x01,
+    /// A general chromatogram. This is the equivalent to 0x00 with TCGRAM set in
+    /// [`FlagParameters`]
     GeneralChromatogram = 0x02,
+    /// A high performance liquid chromatogram
     HPLCChromatogram = 0x03,
+    /// Fourier Transform Infrared, Fourier Transform Near Infrared or Fourier Transform Raman
+    /// spectrum or igram.
     FTIRFTNIRFTRaman = 0x04,
+    /// A near-infrared spectrum
     NIRSpectrum = 0x05,
+    /// A UV-Visible spectrum
     UVVISSpectrum = 0x06,
+    /// An X-ray diffraction spectrum
     XRayDiffractionSpectrum = 0x08,
+    /// A mass-spectrum, which can be single, GC-MS, continuum, centroid or time-of-flight
     MassSpectrum = 0x09,
+    /// A nuclear magnetic resonance spectrum or free induction decay
     NMRSpectrum = 0x0A,
+    /// A Raman spectrum, note that 0x04 is used for Fourier-transform Raman
     RamanSpectrum = 0x0B,
+    /// A fluorescence spectrum
     FluorescenceSpectrum = 0x0C,
+    /// An atomic spectrum
     AtomicSpectrum = 0x0D,
+    /// A chromatography diode array spectra
     ChromatographyDiodeArraySpectra = 0x0E,
 }
 
-impl ExperimentSettings {
+impl InstrumentTechnique {
     pub(crate) fn new(val: u8) -> Option<Self> {
         match val {
             1 => Some(Self::GasChromatogram),
@@ -67,109 +60,72 @@ impl ExperimentSettings {
     }
 }
 
-// export function xzwTypes(xzwType: number): string | number {
-//   switch (xzwType) {
-//     case 1:
-//       return 'Wavenumber (cm-1)';
-//     case 2:
-//       return 'Micrometers (um)';
-//     case 3:
-//       return 'Nanometers (nm)';
-//     case 4:
-//       return 'Seconds';
-//     case 5:
-//       return 'Minutes';
-//     case 6:
-//       return 'Hertz (Hz)';
-//     case 7:
-//       return 'Kilohertz (KHz)';
-//     case 8:
-//       return 'Megahertz (MHz)';
-//     case 9:
-//       return 'Mass (M/z)';
-//     case 10:
-//       return 'Parts per million (PPM)';
-//     case 11:
-//       return 'Days';
-//     case 12:
-//       return 'Years';
-//     case 13:
-//       return 'Raman Shift (cm-1)';
-//     case 14:
-//       return 'eV';
-//     case 15:
-//       return 0;
-//     case 16:
-//       return 'Diode Number';
-//     case 17:
-//       return 'Channel ';
-//     case 18:
-//       return 'Degrees';
-//     case 19:
-//       return 'Temperature (F)';
-//     case 20:
-//       return 'Temperature (C)';
-//     case 21:
-//       return 'Temperature (K)';
-//     case 22:
-//       return 'Data Points';
-//     case 23:
-//       return 'Milliseconds (mSec)';
-//     case 24:
-//       return 'Microseconds (uSec)';
-//     case 25:
-//       return 'Nanoseconds (nSec)';
-//     case 26:
-//       return 'Gigahertz (GHz)';
-//     case 27:
-//       return 'Centimeters (cm)';
-//     case 28:
-//       return 'Meters (m)';
-//     case 29:
-//       return 'Millimeters (mm)';
-//     case 30:
-//       return 'Hours';
-//     case 255:
-//       return 'Double interferogram';
-//     default:
-//       return 'Arbitrary';
-//   }
-// }
-
-#[derive(Copy, Clone, Debug)]
+/// The [`xzwType`] represents all the possible settings for the fxtype, fztype and fwtype
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum xzwType {
+    // Arbitrary
     Arbitrary = 0,
+    /// Wavenumber (cm-1)
     Wavenumber = 1,
+    /// Micrometers (um)
     Micrometers = 2,
+    /// Nanometers (nm)
     Nanometers = 3,
+    /// Seconds
     Seconds = 4,
+    /// Minutes
     Minutes = 5,
+    /// Hertz (Hz)
     Hertz = 6,
+    /// Kilohertz (KHz)
     Kilohertz = 7,
+    /// Megahertz (MHz)
     MegaHertz = 8,
+    /// Mass (M/z)
     Mass = 9,
+    /// Parts per Million (PPM)
     PartsPerMillion = 10,
+    /// Days
     Days = 11,
+    /// Years
     Years = 12,
+    // Raman shift (cm-1)
     RamanShift = 13,
+    /// ElectronVolt (eV)
     ElectronVolt = 14,
-    // TODO: Check the spec
+    /// XYZ text labels are to be found in fcatxt (only in old style-headers)
     Unknown = 15,
+    /// Diode Number
     DiodeNumber = 16,
+    /// Channel
     Channel = 17,
+    /// Degrees
     Degrees = 18,
+    /// Temperature (F)
     TemperatureF = 19,
+    /// Temperature (C)
     TemperatureC = 20,
+    /// Temperature (K)
     TemperatureK = 21,
+    /// Datapoints
     DataPoints = 22,
+    /// Milliseconds (mS)
     Milliseconds = 23,
+    /// Microseconds (uS)
     Microseconds = 24,
+    /// Nanoseconds (nS)
     Nanoseconds = 25,
+    /// GiagHertz (GHz)
     GigaHertz = 26,
+    /// Centimetres (cm)
     Centimeters = 27,
+    /// Metres (m)
     Meters = 28,
+    /// Millimetres (mm)
     Millimeters = 29,
+    /// Hours
     Hours = 30,
+    /// Double interferogram, no display labels
     DoubleInterferogram = 255,
 }
 
@@ -214,103 +170,65 @@ impl xzwType {
     }
 }
 
-// /**
-//  * Gives meaning to y type codes
-//  * @param  yType y type code
-//  * @return  String corresponding to the code
-//  */
-// export function yTypes(yType: number): string {
-//   switch (yType) {
-//     case 0:
-//       return 'Arbitrary Intensity';
-//     case 1:
-//       return 'Interferogram';
-//     case 2:
-//       return 'Absorbance';
-//     case 3:
-//       return 'Kubelka-Monk';
-//     case 4:
-//       return 'Counts';
-//     case 5:
-//       return 'Volts';
-//     case 6:
-//       return 'Degrees';
-//     case 7:
-//       return 'Milliamps';
-//     case 8:
-//       return 'Millimeters';
-//     case 9:
-//       return 'Millivolts';
-//     case 10:
-//       return 'Log(1/R)';
-//     case 11:
-//       return 'Percent';
-//     case 12:
-//       return 'Intensity';
-//     case 13:
-//       return 'Relative Intensity';
-//     case 14:
-//       return 'Energy';
-//     case 16:
-//       return 'Decibel';
-//     case 19:
-//       return 'Temperature (F)';
-//     case 20:
-//       return 'Temperature (C)';
-//     case 21:
-//       return 'Temperature (K)';
-//     case 22:
-//       return 'Index of Refraction [N]';
-//     case 23:
-//       return 'Extinction Coeff. [K]';
-//     case 24:
-//       return 'Real';
-//     case 25:
-//       return 'Imaginary';
-//     case 26:
-//       return 'Complex';
-//     case 128:
-//       return 'Transmission';
-//     case 129:
-//       return 'Reflectance';
-//     case 130:
-//       return 'Arbitrary or Single Beam with Valley Peaks';
-//     case 131:
-//       return 'Emission';
-//     default:
-//       return 'Reference Arbitrary Energy';
-//   }
-// }
-//
+/// The [`yType`] represents all the possible settings for the fytype. Note that all the first 127
+/// values exhibit positive peaks, while values 129 or greater are expected to exhibit valleys
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum yType {
+    /// Arbitrary intensity
     ArbitraryIntensity = 0,
+    /// Interferogram
     Interferogram = 1,
+    /// Absorbance
     Absorbance = 2,
+    /// Kubelka-Monk
     KubelkaMonk = 3,
+    /// Counts
     Counts = 4,
+    /// Volts
     Volts = 5,
+    /// Degrees
     Degrees = 6,
+    /// Milliamps
     Milliamps = 7,
+    /// Millimeters
     Millimeters = 8,
+    /// Millivolts
     Millivolts = 9,
+    /// Log(1/R)
     LogInvR = 10,
+    /// Percent
     Percent = 11,
+    /// Intensity
     Intensity = 12,
+    /// Relative intensity
     RelativeIntensity = 13,
+    /// Energy
     Energy = 14,
+    /// Decibel
     Decibel = 15,
+    /// Temperature (F)
     TemperatureF = 19,
+    /// Temperature (C)
     TemperatureC = 20,
+    /// Temperature (K)
     TemperatureK = 21,
+    /// Index of Refraction [N]
     IndexOfRefraction = 22,
+    /// Index of Refraction [K]
     ExtinctionCoeff = 23,
+    /// Real
     Real = 24,
+    /// Imaginary
     Imaginary = 25,
+    /// Complex
     Complex = 26,
+    /// Transmission
     Transmission = 128,
+    /// Reflectance
     Reflectance = 129,
+    /// Arbitrary or Single Beam with Valley Peaks
     ArbitraryOrSingleBeamWithValleyPeaks = 130,
+    /// Emission
     Emission = 131,
 }
 

@@ -1,11 +1,15 @@
+mod datetime;
 mod flags;
 mod subheader;
 
+use datetime::{Month, MonthParseError};
 pub(crate) use flags::DataShape;
 use miette::Diagnostic;
 pub(crate) use subheader::{SubHeaderParseError, SubHeaderParser, Subheader};
 
-use crate::{parse::Endian, xzwType, yType, ExperimentSettings, SPCFile};
+use crate::{
+    parse::Endian, units::InstrumentTechnique, xzwType, yType, ExperimentSettings, SPCFile,
+};
 use flags::FlagParameters;
 
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
@@ -33,6 +37,8 @@ pub(crate) enum HeaderParseError {
     ReservedNonZero,
     #[error("File ended before fixed length header could be parsed")]
     PrematureTermination,
+    #[error("Error in Month Value: {0}")]
+    MonthParse(#[from] MonthParseError),
 }
 
 /// The header of an SPC file has two formats, depending on the version of software which created
@@ -78,10 +84,30 @@ pub(crate) enum Header {
 /// rather than a double and the x-limits are only stored in single precision.
 #[derive(Clone, Debug)]
 pub(crate) struct OldFormatHeader {
+    /// The [`FlagParameters`] for the .SPC
     pub(super) flags: FlagParameters,
+    /// The exponent for the Y values.
+    ///
+    /// If the exponent is equal to 80h, then the values are to be interpreted directly as floating
+    /// point data. If not the float values are reconstructed as
+    /// - FloatY = (2^ExponentY) * IntY / (2^32)
+    /// - FloatY = (2^ExponentY) * IntY / (2^16)
+    /// Depending on the whether the data is 16 or 32 bit according to the [`FlagParameters`]
     pub(super) exponent_y: i16,
+    /// The number of data points in the file if it is not XYXY format
+    ///
+    /// If x-data is not explicitly provided then it is assumed to be evenly spaced, and is
+    /// constructed as a linear space from the starting_x to the ending_x containing number points.
     pub(super) number_points: f32,
+    /// The first x-coordinate in the dataset
+    ///
+    /// If x-data is not explicitly provided then it is assumed to be evenly spaced, and is
+    /// constructed as a linear space from the starting_x to the ending_x containing number points.
     pub(super) starting_x: f32,
+    /// The last x-coordinate in the dataset
+    ///
+    /// If x-data is not explicitly provided then it is assumed to be evenly spaced, and is
+    /// constructed as a linear space from the starting_x to the ending_x containing number points.
     pub(super) ending_x: f32,
     pub(super) x_unit_type: xzwType,
     pub(super) y_unit_type: yType,
@@ -144,7 +170,7 @@ pub(crate) struct NewFormatHeader {
     pub(super) file_version: u8,
     /// Flag parameters are packend into a single byte
     pub(super) flags: FlagParameters,
-    pub(super) experiment_settings: ExperimentSettings,
+    pub(super) instrument_technique: InstrumentTechnique,
     /// The exponent for the Y values.
     ///
     /// If the exponent is equal to 80h, then the values are to be interpreted directly as floating
@@ -279,7 +305,7 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
     }
 
     fn parse_new_format(&mut self) -> Result<NewFormatHeader, HeaderParseError> {
-        let experiment_settings = ExperimentSettings::new(self.read_byte()?).unwrap();
+        let instrument_technique = InstrumentTechnique::new(self.read_byte()?).unwrap();
         let exponent_y = self.read_i8()?;
         let number_points = self.read_u32()?;
         let starting_x = self.read_f64()?;
@@ -337,7 +363,7 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
         Ok(NewFormatHeader {
             file_version: self.version,
             flags: self.flags,
-            experiment_settings,
+            instrument_technique,
             exponent_y,
             number_points,
             starting_x,
@@ -380,16 +406,12 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
         let z_type_year = self.read_u16()?;
         let z_unit_type = xzwType::new((z_type_year >> 12) as u8).unwrap();
 
-        println!("z_type_year: {}", z_type_year);
-        // let year = z_type_year & 0x0fff;
-        // let year = z_type_year & 0xf000;
-
-        // This seems to not be good if we lop the bits off..
-        let year = z_type_year;
-        println!("year: {}", year);
+        let year = z_type_year & 0x0fff;
 
         // The datetime is only available if the year is non-zero
         let datetime = if year == 0 {
+            let _ = self.read_f32()?; // If there is no data, then we still need to read the bytes
+                                      // to advance
             None
         } else {
             Some(self.parse_old_format_datetime(year)?)
@@ -431,7 +453,7 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
 
     // Old format datetimes are stored in 4 consecutive bits following the year
     fn parse_old_format_datetime(&mut self, year: u16) -> Result<DateTime<Utc>, HeaderParseError> {
-        let month = self.read_byte()?.max(1); //.wrapping_sub(1);
+        let month = Month::try_from(self.read_byte()?)?;
         let date = self.read_byte()?;
         let hours = self.read_byte()?;
         let minutes = self.read_byte()?;
@@ -447,7 +469,7 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
             LocalResult::Single(datetime) => Ok(datetime),
             LocalResult::None => Err(HeaderParseError::Datetime {
                 year,
-                month,
+                month: month as u8,
                 date,
                 hours,
                 minutes,
@@ -457,7 +479,7 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
 
                 Err(HeaderParseError::Datetime {
                     year,
-                    month,
+                    month: month as u8,
                     date,
                     hours,
                     minutes,
@@ -467,21 +489,23 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
     }
 
     fn parse_new_format_datetime(&mut self) -> Result<DateTime<Utc>, HeaderParseError> {
-        let first = self.read_byte()?;
-        let second = self.read_byte()?;
-        let third = self.read_byte()?;
-        let fourth = self.read_byte()?;
+        let data = self.read_u32()?;
 
-        // The first six bits are the minutes
-        let minutes = first >> 2;
+        // The least significant six bits are the minutes
+        let minutes = (data & 0b111111) as u8;
         // The next five bits are the hour
-        let hours = ((first & 0b11) << 3) | (second >> 5);
+        let hours = ((data >> 6) & 0b11111) as u8;
         // The next five bits are the day
-        let date = second >> 3;
+        let date = ((data >> 11) & 0b11111) as u8;
         // The next four bits are the month
-        let month = third >> 4;
+        let month = ((data >> 16) & 0b1111) as u8;
         // And the rest is the year
-        let year = u16::from_be_bytes([third & 0b1111, fourth]);
+        let year = (data >> 20) as u16;
+        //
+        println!(
+            "Year: {}, Month: {}, Date: {}, Hours: {}, Minutes: {}",
+            year, month, date, hours, minutes
+        );
 
         match Utc.with_ymd_and_hms(
             year as i32,
@@ -507,5 +531,1077 @@ impl<'a, 'de> HeaderParser<'a, 'de> {
                 minutes,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::io::{BufRead, BufReader};
+
+    use crate::parse::SPCFile;
+
+    use super::HeaderParser;
+
+    use chrono::{Datelike, Timelike};
+    use regex::Regex;
+
+    #[test]
+    fn m_xyxy_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/m_xyxy.spc");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::New(header) => header,
+            _ => panic!("Expected an new format header"),
+        };
+
+        assert!(header.flags.multifile());
+        assert_eq!(header.x_unit_type, crate::xzwType::Mass);
+        assert_eq!(header.z_unit_type, crate::xzwType::Minutes);
+
+        let memo_regex = Regex::new(r"^Multiple .*X & Y arrays").unwrap();
+        assert!(memo_regex.is_match(&header.memo));
+
+        let datetime = header.datetime;
+        assert_eq!(datetime.minute(), 47);
+        assert_eq!(datetime.hour(), 8);
+        assert_eq!(datetime.day(), 9);
+        assert_eq!(datetime.month(), 1);
+        assert_eq!(datetime.year(), 1986);
+        //
+    }
+
+    #[test]
+    fn raman_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/raman.spc");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::New(header) => header,
+            _ => panic!("Expected an new format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::RamanShift);
+
+        let datetime = header.datetime;
+        assert_eq!(datetime.minute(), 45);
+        assert_eq!(datetime.hour(), 16);
+        assert_eq!(datetime.day(), 26);
+        assert_eq!(datetime.month(), 8);
+        assert_eq!(datetime.year(), 1994);
+        //
+    }
+
+    #[test]
+    fn m_ordz_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/m_ordz.spc");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an new format header"),
+        };
+
+        let memo_regex = Regex::new(r"^Multiple .*ordered Z spacing").unwrap();
+        assert!(memo_regex.is_match(&header.memo));
+    }
+
+    #[test]
+    fn water_refractive_index_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/WTERN95HEADER.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "n spectrum of liquid H2O at 25 C; Appl. Spec. 50, 1047 (1996)"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1995);
+    }
+
+    #[test]
+    fn water_absorption_coefficient_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/WTERK95HEADER.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "k spectrum of liquid H2O at 25 C;  Appl. Spec. 50, 1047 (1996)"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1995);
+    }
+
+    #[test]
+    fn water_real_dielectric_constant_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/WTERDC95HEADER.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "Real dielectric constant of H2O at 25 C; Appl. Spec. 50, 1047 (1996)"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1995);
+    }
+
+    #[test]
+    fn water_dielectric_loss_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/WTERDL95HEADER.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "dielectric loss spectrum of H2O at 25 C;  Appl. Spec. 50, 1047 (1996)"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1995);
+    }
+
+    #[test]
+    fn water_molar_absorptivity_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/WTEREM95HEADER.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "molar absorptivity spectrum of H2O at 25 C in L/(mole-cm)"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1995);
+    }
+
+    #[test]
+    fn c6d6_dielectric_constant_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6DC98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "Dielectric Constant of liquid C6D6 at 25 C");
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6DC98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn c6d6_dielectric_loss_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6DL98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "Dielectric Loss of liquid C6D6 at 25 C");
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6DL98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn c6d6_molar_absorptivity_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6EM98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "Molar Absorptivity of C6D6(l) at 25C; units L/(mole-cm)"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6EM98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn c6d6_imaginary_molar_polarisability_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6IP98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "imaginary molar polarizability of C6D6 at 25 C.Units:  cm^3/mole"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6IP98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn c6d6_absorption_coefficient_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6K98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "Imaginary refractive index of liquid C6D6 at 25 C"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6K98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn c6d6_refractive_index_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6N98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "real refractive index of liquid C6D6 at 25 C");
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1994);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6N98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn c6d6_na_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6NA98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "nu*IP of liquid C6D6 at 25 C.  Units 10^5 cm^2/mole"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6NA98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn c6d6_rp_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/C6D6RP98.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "real molar polarizability of liquid C6D6 at 25 C.  Unit: cm^3/mole"
+        );
+
+        let datetime = header.datetime.unwrap();
+        assert_eq!(datetime.year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6D6ASC/C6D6RP98.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_dielectric_constant_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DDC.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "(Real) dielectric constant");
+
+        assert!(header.datetime.is_none());
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DDC.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_dielectric_loss_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DDL.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "Dielectric loss, i.e., imaginary dielectric constant"
+        );
+
+        assert!(header.datetime.is_none());
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DDL.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_molar_absorptivity_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DEM.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "Decadic Molar Absorption Coefficient in L/(mole-cm)"
+        );
+
+        assert!(header.datetime.is_none());
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DEM.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_imaginary_molar_polarisability_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DIP.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(
+            header.memo,
+            "IP, Imaginary molar polarizability, in cm^3/mole"
+        );
+
+        assert!(header.datetime.is_none());
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DIP.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_absorption_coefficient_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DK.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "imaginary refractive index of C6H5D at 25 C");
+
+        assert!(header.datetime.is_some());
+        assert_eq!(header.datetime.unwrap().year(), 1990);
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DK.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_refractive_index_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DN.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "Real refractive index of C6H5D at 25 C");
+
+        assert!(header.datetime.is_some());
+        assert_eq!(header.datetime.unwrap().year(), 1994);
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DN.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_na_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DNA.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "nu*IP in cm^2/mole");
+
+        assert!(header.datetime.is_none());
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DNA.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
+    }
+
+    #[test]
+    fn bzh5d_rp_header_parses_correctly() {
+        let data = include_bytes!("../../test_data/header/BZH5DRP.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut header_parser = HeaderParser::new(&mut parser).unwrap();
+        let result = header_parser.parse();
+
+        assert!(result.is_ok());
+
+        let parsed = result.unwrap();
+
+        let header = match parsed {
+            super::Header::Old(header) => header,
+            _ => panic!("Expected an old format header"),
+        };
+
+        assert_eq!(header.x_unit_type, crate::xzwType::Wavenumber);
+        assert_eq!(header.memo, "RP, real molar polarizability, in cm^3/mole");
+
+        assert!(header.datetime.is_none());
+
+        let txt_path = include_str!("../../test_data/txt/C6H5DASC/BzH5DRP.txt");
+        let num_lines = BufReader::new(txt_path.as_bytes()).lines().count();
+        assert_eq!(num_lines, header.number_points as usize);
+
+        let mut reader = BufReader::new(txt_path.as_bytes()).lines();
+        let first_x_in_txt: f32 = reader
+            .next()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let last_x_in_txt: f32 = reader
+            .last()
+            .unwrap()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        approx::assert_relative_eq!(first_x_in_txt, header.starting_x, epsilon = 1e-2);
+        approx::assert_relative_eq!(last_x_in_txt, header.ending_x, epsilon = 1e-2);
     }
 }

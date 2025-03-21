@@ -18,3 +18,7 @@ miette = { version = "7.5.0", features = ["fancy"] }
 regex = "1.11.1"
 serde = { version = "1.0.219", features = ["derive"] }
 thiserror = "2.0.12"
+
+[dev-dependencies]
+approx = "0.5.1"
+snap = "1.1.1"

@@ -4,6 +4,8 @@ use crate::SPCFile;
 pub(crate) enum SubHeaderParseError {
     #[error("Premature termination of binary input")]
     PrematureTermination,
+    #[error("The reserved fields were not set to zero")]
+    ReservedFieldsNotZero,
 }
 
 #[derive(Clone, Debug)]
@@ -20,7 +22,6 @@ pub(crate) struct Subheader {
     number_points: u32,
     number_co_added_scans: u32,
     w_axis_value: f32,
-    reserved: String,
 }
 
 pub(crate) struct SubHeaderParser<'a, 'de>(pub(crate) &'a mut SPCFile<'de>);
@@ -63,6 +64,8 @@ impl<'a, 'de> SubHeaderParser<'a, 'de> {
     }
 
     pub(crate) fn parse(&mut self) -> Result<Subheader, SubHeaderParseError> {
+        let start = self.0.byte;
+
         let parameters = SubFlagParameters(self.read_byte()?);
         let exponent_y = self.read_i8()?;
         let index_number = self.read_u16()?;
@@ -72,7 +75,16 @@ impl<'a, 'de> SubHeaderParser<'a, 'de> {
         let number_points = self.read_u32()?;
         let number_co_added_scans = self.read_u32()?;
         let w_axis_value = self.read_f32()?;
-        let reserved = self.read_unescaped_utf8(4)?.trim().to_owned();
+
+        for _ in 0..4 {
+            let each = self.read_byte()?;
+            if each != 0 {
+                return Err(SubHeaderParseError::ReservedFieldsNotZero);
+            }
+        }
+
+        assert_eq!(self.0.byte - start, 32);
+
         Ok(Subheader {
             parameters,
             exponent_y,
@@ -83,7 +95,41 @@ impl<'a, 'de> SubHeaderParser<'a, 'de> {
             number_points,
             number_co_added_scans,
             w_axis_value,
-            reserved,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::parse::SPCFile;
+
+    use super::SubHeaderParser;
+
+    #[test]
+    fn water_refractive_index_subheader_parses_correctly() {
+        let data = include_bytes!("../../test_data/subheader/WTERN95SUBHEADER.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut subheader_parser = SubHeaderParser(&mut parser);
+        let result = subheader_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        dbg!(&parsed);
+    }
+
+    #[test]
+    fn water_absorption_coefficient_subheader() {
+        let data = include_bytes!("../../test_data/subheader/WTERK95SUBHEADER.SPC");
+        let mut parser = SPCFile::new(data);
+
+        let mut subheader_parser = SubHeaderParser(&mut parser);
+        let result = subheader_parser.parse();
+
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+
+        dbg!(&parsed);
     }
 }

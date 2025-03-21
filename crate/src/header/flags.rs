@@ -44,7 +44,7 @@ impl FlagParameters {
         (self.0 >> 1 & 1) == 1
     }
 
-    fn multifile(&self) -> bool {
+    pub(super) fn multifile(&self) -> bool {
         (self.0 >> 2 & 1) == 1
     }
 
