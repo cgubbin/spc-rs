@@ -3,7 +3,7 @@ use clap::Parser;
 use fs_err::File;
 use miette::{Context, IntoDiagnostic};
 
-use spc_rs::{parse, write_spc};
+use spc_rs::parse;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -17,7 +17,7 @@ fn main() -> miette::Result<()> {
                 .into_diagnostic()
                 .wrap_err_with(|| format!("opening '{}' failed", args.file_path))?;
             let parsed = parse(file)?;
-            write_spc(&args.file_path, parsed)?;
+            // write_spc(&args.file_path, parsed)?;
         }
         Err(err) => {
             eprintln!("Error: {}", err);

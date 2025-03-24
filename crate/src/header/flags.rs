@@ -1,3 +1,5 @@
+use zerocopy::{Immutable, KnownLayout, TryFromBytes};
+
 /// The first byte of the SPC file contains flags, describing the data to come
 
 /// Flag parameters for an SPC file
@@ -14,7 +16,8 @@
 ///     and fztype corresponding to non-null text in fcatxt
 /// - TXYXYS: Each subfile has a unique x-array. This can only be used if TXVALS is also used.
 /// - TXVALS: X-data is not evenly spaced, an x-value array preceeds the y-data blocks
-#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, KnownLayout, Immutable, TryFromBytes)]
 pub(crate) struct FlagParameters(pub(super) u8);
 
 /**
@@ -35,9 +38,27 @@ pub(crate) enum DataShape {
     XYXY,
 }
 
+pub(crate) enum Precision {
+    SixteenBit,
+    ThirtyTwoBit,
+}
+
+impl Precision {
+    pub(crate) fn bytes_per_point(&self) -> usize {
+        match self {
+            Precision::SixteenBit => 2,
+            Precision::ThirtyTwoBit => 4,
+        }
+    }
+}
+
 impl FlagParameters {
-    pub(crate) fn y_precision_is_16_bit(&self) -> bool {
-        (self.0 & 1) == 1
+    pub(crate) fn y_precision(&self) -> Precision {
+        if (self.0 & 1) == 1 {
+            Precision::SixteenBit
+        } else {
+            Precision::ThirtyTwoBit
+        }
     }
 
     fn use_fexper_extension(&self) -> bool {
@@ -64,7 +85,7 @@ impl FlagParameters {
         (self.0 >> 6 & 1) == 1
     }
 
-    fn xy(&self) -> bool {
+    pub(super) fn xy(&self) -> bool {
         (self.0 >> 7 & 1) == 1
     }
 
@@ -103,7 +124,7 @@ impl ::std::fmt::Display for FlagParameters {
         writeln!(
             f,
             "y precision: {} bit",
-            if self.y_precision_is_16_bit() { 16 } else { 32 }
+            self.y_precision().bytes_per_point() * 8
         )?;
         writeln!(f, "fexper: {}", self.use_fexper_extension())?;
         writeln!(f, "multifile data: {}", self.multifile())?;

@@ -1,3 +1,6 @@
+use scroll::{ctx, Endian};
+use zerocopy::TryFromBytes;
+
 /// A subfile-header preceeds an individual trace in a multi-type file. For evenly spaced files
 /// the subtime (z) and subnext (next_z) are ignored for all except the first subfile. In this case
 /// the spacing defined by the first subfile determines the z-spacing for all files.
@@ -14,6 +17,10 @@ pub(crate) enum SubHeaderParseError {
     PrematureTermination,
     #[error("The reserved fields were not set to zero")]
     ReservedFieldsNotZero,
+    #[error("The subheader flags should only have bits 0, 3, and 7 set but found: {0}")]
+    SubheaderFlags(u8),
+    #[error("Error in underlying scroll")]
+    Scroll(#[from] scroll::Error),
 }
 
 /// [`SubFlagParameters`] are stored in the first byte of the [`Subheader`]
@@ -22,10 +29,43 @@ pub(crate) enum SubHeaderParseError {
 /// - Bit 0: Indicates if the subfile changed
 /// - Bit 3: Indicates if the peak table file should not be used
 /// - Bit 7: Indicates if the subfile was modified by arithmetic
-#[derive(Clone, Debug)]
+#[repr(C)]
+#[derive(Clone, Debug, TryFromBytes)]
 struct SubFlagParameters(u8);
 
-#[derive(Clone, Debug)]
+impl<'a> ctx::TryFromCtx<'a, Endian> for SubFlagParameters {
+    type Error = SubHeaderParseError;
+    fn try_from_ctx(bytes: &'a [u8], _: Endian) -> Result<(Self, usize), Self::Error> {
+        if (bytes[0] & 0b1000_1001) != bytes[0] {
+            return Err(SubHeaderParseError::SubheaderFlags(bytes[0]));
+        }
+        Ok((Self(bytes[0]), 1))
+    }
+}
+
+#[cfg(test)]
+mod testsub {
+    use super::SubFlagParameters;
+    use scroll::{Endian, Pread};
+    #[test]
+    fn subflag_parameters() {
+        let data = vec![0b1000_1001];
+        let src = &data;
+        let offset = &mut 0;
+        let subheader_params = src.gread::<SubFlagParameters>(offset).unwrap();
+        dbg!(&subheader_params);
+    }
+}
+
+// impl TryFromBytes for SubFlagParameters {
+//     type Error = zerocopy::FromBytesError;
+//     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+//         Ok(Self(bytes[0]))
+//     }
+// }
+
+#[repr(C)]
+#[derive(Clone, Debug, TryFromBytes)]
 pub(crate) struct Subheader {
     parameters: SubFlagParameters,
     /// The exponent of the Y axis for the sub-file
@@ -50,6 +90,10 @@ pub(crate) struct Subheader {
     scan: u32,
     /// The value of the floating w-axis (if fwplanes is non-zero)
     w_level: f32,
+    /// A reserved region which must be set to zero
+    ///
+    /// This is only stored here so we can implement [`TryFromBytes`]
+    reserved: [u8; 4],
 }
 
 pub(crate) struct SubHeaderParser<'a, 'de>(pub(crate) &'a mut SPCFile<'de>);
@@ -94,6 +138,7 @@ impl<'a, 'de> SubHeaderParser<'a, 'de> {
     pub(crate) fn parse(&mut self) -> Result<Subheader, SubHeaderParseError> {
         let start = self.0.byte;
 
+        // let parameters = SubFlagParameters(self.read_byte()?);
         let parameters = SubFlagParameters(self.read_byte()?);
         let exponent_y = self.read_i8()?;
         let index_number = self.read_u16()?;
@@ -123,6 +168,7 @@ impl<'a, 'de> SubHeaderParser<'a, 'de> {
             number_points,
             scan,
             w_level,
+            reserved: [0; 4],
         })
     }
 }

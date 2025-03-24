@@ -1,3 +1,5 @@
+use clap::Error;
+
 /// The [`InstrumentTechnique`] represents all the possible values taken by the third byte in a new
 /// style header
 ///
@@ -38,24 +40,28 @@ pub(crate) enum InstrumentTechnique {
     ChromatographyDiodeArraySpectra = 0x0E,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid InstrumentTechnique value: {0}")]
+pub(crate) struct InstrumentTechniqueCreationError(u8);
+
 impl InstrumentTechnique {
-    pub(crate) fn new(val: u8) -> Option<Self> {
+    pub(crate) fn new(val: u8) -> Result<Self, InstrumentTechniqueCreationError> {
         match val {
-            1 => Some(Self::GasChromatogram),
-            2 => Some(Self::GeneralChromatogram),
-            3 => Some(Self::HPLCChromatogram),
-            4 => Some(Self::FTIRFTNIRFTRaman),
-            5 => Some(Self::NIRSpectrum),
-            7 => Some(Self::UVVISSpectrum),
-            8 => Some(Self::XRayDiffractionSpectrum),
-            9 => Some(Self::MassSpectrum),
-            10 => Some(Self::NMRSpectrum),
-            11 => Some(Self::RamanSpectrum),
-            12 => Some(Self::FluorescenceSpectrum),
-            13 => Some(Self::AtomicSpectrum),
-            14 => Some(Self::ChromatographyDiodeArraySpectra),
-            0 => Some(Self::GeneralSPC),
-            _ => None,
+            1 => Ok(Self::GasChromatogram),
+            2 => Ok(Self::GeneralChromatogram),
+            3 => Ok(Self::HPLCChromatogram),
+            4 => Ok(Self::FTIRFTNIRFTRaman),
+            5 => Ok(Self::NIRSpectrum),
+            7 => Ok(Self::UVVISSpectrum),
+            8 => Ok(Self::XRayDiffractionSpectrum),
+            9 => Ok(Self::MassSpectrum),
+            10 => Ok(Self::NMRSpectrum),
+            11 => Ok(Self::RamanSpectrum),
+            12 => Ok(Self::FluorescenceSpectrum),
+            13 => Ok(Self::AtomicSpectrum),
+            14 => Ok(Self::ChromatographyDiodeArraySpectra),
+            0 => Ok(Self::GeneralSPC),
+            v => Err(InstrumentTechniqueCreationError(v)),
         }
     }
 }
@@ -129,43 +135,47 @@ pub(crate) enum xzwType {
     DoubleInterferogram = 255,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid xzwType value: {0}")]
+pub(crate) struct xzwTypeCreationError(u8);
+
 impl xzwType {
-    pub(crate) fn new(val: u8) -> Option<Self> {
+    pub(crate) fn new(val: u8) -> Result<Self, xzwTypeCreationError> {
         match val {
             // TODO: Should we return arbitrary for all non-enumerated values?
-            0 => Some(Self::Arbitrary),
-            1 => Some(Self::Wavenumber),
-            2 => Some(Self::Micrometers),
-            3 => Some(Self::Nanometers),
-            4 => Some(Self::Seconds),
-            5 => Some(Self::Minutes),
-            6 => Some(Self::Hertz),
-            7 => Some(Self::Kilohertz),
-            8 => Some(Self::MegaHertz),
-            9 => Some(Self::Mass),
-            10 => Some(Self::PartsPerMillion),
-            11 => Some(Self::Days),
-            12 => Some(Self::Years),
-            13 => Some(Self::RamanShift),
-            14 => Some(Self::ElectronVolt),
-            15 => Some(Self::Unknown),
-            16 => Some(Self::DiodeNumber),
-            17 => Some(Self::Channel),
-            18 => Some(Self::Degrees),
-            19 => Some(Self::TemperatureF),
-            20 => Some(Self::TemperatureC),
-            21 => Some(Self::TemperatureK),
-            22 => Some(Self::DataPoints),
-            23 => Some(Self::Milliseconds),
-            24 => Some(Self::Microseconds),
-            25 => Some(Self::Nanoseconds),
-            26 => Some(Self::GigaHertz),
-            27 => Some(Self::Centimeters),
-            28 => Some(Self::Meters),
-            29 => Some(Self::Millimeters),
-            30 => Some(Self::Hours),
-            255 => Some(Self::DoubleInterferogram),
-            _ => None,
+            0 => Ok(Self::Arbitrary),
+            1 => Ok(Self::Wavenumber),
+            2 => Ok(Self::Micrometers),
+            3 => Ok(Self::Nanometers),
+            4 => Ok(Self::Seconds),
+            5 => Ok(Self::Minutes),
+            6 => Ok(Self::Hertz),
+            7 => Ok(Self::Kilohertz),
+            8 => Ok(Self::MegaHertz),
+            9 => Ok(Self::Mass),
+            10 => Ok(Self::PartsPerMillion),
+            11 => Ok(Self::Days),
+            12 => Ok(Self::Years),
+            13 => Ok(Self::RamanShift),
+            14 => Ok(Self::ElectronVolt),
+            15 => Ok(Self::Unknown),
+            16 => Ok(Self::DiodeNumber),
+            17 => Ok(Self::Channel),
+            18 => Ok(Self::Degrees),
+            19 => Ok(Self::TemperatureF),
+            20 => Ok(Self::TemperatureC),
+            21 => Ok(Self::TemperatureK),
+            22 => Ok(Self::DataPoints),
+            23 => Ok(Self::Milliseconds),
+            24 => Ok(Self::Microseconds),
+            25 => Ok(Self::Nanoseconds),
+            26 => Ok(Self::GigaHertz),
+            27 => Ok(Self::Centimeters),
+            28 => Ok(Self::Meters),
+            29 => Ok(Self::Millimeters),
+            30 => Ok(Self::Hours),
+            255 => Ok(Self::DoubleInterferogram),
+            v => Err(xzwTypeCreationError(v)),
         }
     }
 }
@@ -232,38 +242,42 @@ pub(crate) enum yType {
     Emission = 131,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid yType value: {0}")]
+pub(crate) struct yTypeCreationError(u8);
+
 impl yType {
-    pub(crate) fn new(val: u8) -> Option<Self> {
+    pub(crate) fn new(val: u8) -> Result<Self, yTypeCreationError> {
         match val {
-            0 => Some(Self::ArbitraryIntensity),
-            1 => Some(Self::Interferogram),
-            2 => Some(Self::Absorbance),
-            3 => Some(Self::KubelkaMonk),
-            4 => Some(Self::Counts),
-            5 => Some(Self::Volts),
-            6 => Some(Self::Degrees),
-            7 => Some(Self::Milliamps),
-            8 => Some(Self::Millimeters),
-            9 => Some(Self::Millivolts),
-            10 => Some(Self::LogInvR),
-            11 => Some(Self::Percent),
-            12 => Some(Self::Intensity),
-            13 => Some(Self::RelativeIntensity),
-            14 => Some(Self::Energy),
-            15 => Some(Self::Decibel),
-            19 => Some(Self::TemperatureF),
-            20 => Some(Self::TemperatureC),
-            21 => Some(Self::TemperatureK),
-            22 => Some(Self::IndexOfRefraction),
-            23 => Some(Self::ExtinctionCoeff),
-            24 => Some(Self::Real),
-            25 => Some(Self::Imaginary),
-            26 => Some(Self::Complex),
-            128 => Some(Self::Transmission),
-            129 => Some(Self::Reflectance),
-            130 => Some(Self::ArbitraryOrSingleBeamWithValleyPeaks),
-            131 => Some(Self::Emission),
-            _ => None,
+            0 => Ok(Self::ArbitraryIntensity),
+            1 => Ok(Self::Interferogram),
+            2 => Ok(Self::Absorbance),
+            3 => Ok(Self::KubelkaMonk),
+            4 => Ok(Self::Counts),
+            5 => Ok(Self::Volts),
+            6 => Ok(Self::Degrees),
+            7 => Ok(Self::Milliamps),
+            8 => Ok(Self::Millimeters),
+            9 => Ok(Self::Millivolts),
+            10 => Ok(Self::LogInvR),
+            11 => Ok(Self::Percent),
+            12 => Ok(Self::Intensity),
+            13 => Ok(Self::RelativeIntensity),
+            14 => Ok(Self::Energy),
+            15 => Ok(Self::Decibel),
+            19 => Ok(Self::TemperatureF),
+            20 => Ok(Self::TemperatureC),
+            21 => Ok(Self::TemperatureK),
+            22 => Ok(Self::IndexOfRefraction),
+            23 => Ok(Self::ExtinctionCoeff),
+            24 => Ok(Self::Real),
+            25 => Ok(Self::Imaginary),
+            26 => Ok(Self::Complex),
+            128 => Ok(Self::Transmission),
+            129 => Ok(Self::Reflectance),
+            130 => Ok(Self::ArbitraryOrSingleBeamWithValleyPeaks),
+            131 => Ok(Self::Emission),
+            v => Err(yTypeCreationError(v)),
         }
     }
 }

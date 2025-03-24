@@ -1,3 +1,5 @@
+/// The main body of an SPC file is the Block. Each block describes a unique trace, containing a
+/// set of x-y variables. An SPC file can contain one or more blocks.
 use crate::{
     header::{DataShape, NewFormatHeader, OldFormatHeader, SubHeaderParseError, SubHeaderParser},
     SPCFile,
