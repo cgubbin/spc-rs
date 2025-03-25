@@ -177,7 +177,7 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
     // X-data is always stored as a contiguous list of 32-bit floating point values.
     fn lex_x(&mut self, num_points: usize) -> miette::Result<LexedXData<'data, E>> {
         let data = self.read_byte_slice(num_points * Precision::ThirtyTwoBit.bytes_per_point());
-        Ok(LexedXData::new(data)?)
+        LexedXData::new(data)
     }
 
     fn lex_subfile(
@@ -196,7 +196,7 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
             (_, false) => panic!("Inconsistent data types expected"),
         };
         let data = self.read_byte_slice(num_points * mode.bytes_per_point());
-        Ok(LexedSubfile::new(subheader, data, mode)?)
+        LexedSubfile::new(subheader, data, mode)
     }
 
     fn lex_subfiles(
@@ -340,7 +340,7 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
         // The log data is immediately after the header
         let data = &self.rest[..header.binary_size()];
         // And the text block is the remainder?
-        let text = &self.rest[..];
+        let text = self.rest;
 
         // So at this point the rest is always empty
 

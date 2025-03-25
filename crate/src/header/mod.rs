@@ -56,7 +56,7 @@ pub(crate) enum LexedHeader<'data, E: ByteOrder> {
     New(&'data LexedNewFormatHeader<E>),
 }
 
-impl<'data, E: ByteOrder> LexedHeader<'data, E> {
+impl<E: ByteOrder> LexedHeader<'_, E> {
     pub(crate) fn data_shape(&self) -> DataShape {
         match self {
             LexedHeader::Old(header) => &header.flags,
@@ -113,7 +113,7 @@ impl<'data, E: ByteOrder> LexedHeader<'data, E> {
                 num
             }
             LexedHeader::New(header) => {
-                let num: i8 = header.exponent_y.into();
+                let num: i8 = header.exponent_y;
                 num as i16
             }
         }
@@ -191,14 +191,14 @@ impl Header {
     pub(crate) fn starting_x(&self) -> f64 {
         match self {
             Header::Old(header) => header.starting_x as f64,
-            Header::New(header) => header.starting_x as f64,
+            Header::New(header) => header.starting_x,
         }
     }
 
     pub(crate) fn ending_x(&self) -> f64 {
         match self {
             Header::Old(header) => header.ending_x as f64,
-            Header::New(header) => header.ending_x as f64,
+            Header::New(header) => header.ending_x,
         }
     }
 }

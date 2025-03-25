@@ -250,7 +250,7 @@ impl<E: ByteOrder> TryParse for LexedBlock<'_, E> {
     }
 }
 
-impl<'data, E: ByteOrder> ::std::fmt::Debug for LexedBlock<'data, E> {
+impl<E: ByteOrder> ::std::fmt::Debug for LexedBlock<'_, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LexedBlock::Y(subfile) => {

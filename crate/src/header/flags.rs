@@ -63,31 +63,31 @@ impl FlagParameters {
     }
 
     fn use_fexper_extension(&self) -> bool {
-        (self.0 >> 1 & 1) == 1
+        ((self.0 >> 1) & 1) == 1
     }
 
     pub(super) fn multifile(&self) -> bool {
-        (self.0 >> 2 & 1) == 1
+        ((self.0 >> 2) & 1) == 1
     }
 
     fn z_values_are_random(&self) -> bool {
-        (self.0 >> 3 & 1) == 1
+        ((self.0 >> 3) & 1) == 1
     }
 
     fn z_values_are_uneven(&self) -> bool {
-        (self.0 >> 4 & 1) == 1
+        ((self.0 >> 4) & 1) == 1
     }
 
     fn custom_axis_labels(&self) -> bool {
-        (self.0 >> 5 & 1) == 1
+        ((self.0 >> 5) & 1) == 1
     }
 
     fn xyxy(&self) -> bool {
-        (self.0 >> 6 & 1) == 1
+        ((self.0 >> 6) & 1) == 1
     }
 
     pub(super) fn xy(&self) -> bool {
-        (self.0 >> 7 & 1) == 1
+        ((self.0 >> 7) & 1) == 1
     }
 
     pub(crate) fn data_shape(&self) -> DataShape {
@@ -96,12 +96,10 @@ impl FlagParameters {
             // Data is Y or XY
             if !self.xy() {
                 return DataShape::Y;
+            } else if self.xyxy() {
+                panic!("exception in datashape creation")
             } else {
-                if self.xyxy() {
-                    panic!("exception in datashape creation")
-                } else {
-                    return DataShape::XY;
-                }
+                return DataShape::XY;
             }
         }
 
