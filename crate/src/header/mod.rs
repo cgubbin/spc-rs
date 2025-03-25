@@ -1,25 +1,17 @@
-mod datetime;
 mod flags;
-// mod subheader;
 mod zerocopy_subheader;
 
-use datetime::{Month, MonthParseError};
 pub(crate) use flags::{DataShape, Precision};
-use miette::{Diagnostic, IntoDiagnostic};
-use scroll::{
-    ctx::{self, TryFromCtx},
-    Endian,
-};
-pub(crate) use zerocopy_subheader::Subheader;
-// pub(crate) use subheader::{SubHeaderParseError, SubHeaderParser, Subheader};
+use miette::Diagnostic;
 use zerocopy::{
     byteorder::{F32, F64, I16, U16, U32},
-    BigEndian, ByteOrder, Immutable, KnownLayout, LittleEndian, TryFromBytes,
+    ByteOrder, Immutable, KnownLayout, TryFromBytes,
 };
+pub(crate) use zerocopy_subheader::{LexedSubheader, Subheader, SubheaderParseError};
 
 use crate::{
-    xzwType, xzwTypeCreationError, yType, yTypeCreationError, InstrumentTechnique,
-    InstrumentTechniqueCreationError,
+    block::YMode, parse::TryParse, xzwType, xzwTypeCreationError, yType, yTypeCreationError,
+    InstrumentTechnique, InstrumentTechniqueCreationError,
 };
 use flags::FlagParameters;
 
@@ -46,45 +38,67 @@ pub(crate) enum HeaderParseError {
     SpareNonZero,
     #[error("Invalid value in reserved field")]
     ReservedNonZero,
-    #[error("Error in Month Value: {0}")]
-    MonthParse(#[from] MonthParseError),
     #[error("Invalid value for xzwType: {0:?}")]
     InvalidXZWType(#[from] xzwTypeCreationError),
     #[error("Invalid value for yType: {0:?}")]
     InvalidYType(#[from] yTypeCreationError),
     #[error("Invalid value for instrument technique: {0:?}")]
     InvalidInstrutmentTechnique(#[from] InstrumentTechniqueCreationError),
-    #[error("Error in ZeroCopy")]
-    ZeroCopy(miette::Error),
 }
 
 /// The header of an SPC file has two formats, depending on the version of software which created
 /// the file.
 #[derive(Clone, Debug)]
-pub(crate) enum Header<'data, E: ByteOrder> {
+pub(crate) enum LexedHeader<'data, E: ByteOrder> {
     // Headers created by SPC software pre-1996 with file version 0x4b
-    Old(&'data OldFormatHeader<E>),
+    Old(&'data LexedOldFormatHeader<E>),
     // Headers created by SPC software post with file versions 0x4c of 0x4d
-    New(&'data NewFormatHeader<E>),
+    New(&'data LexedNewFormatHeader<E>),
 }
 
-impl<'data, E: ByteOrder> Header<'data, E> {
+impl<'data, E: ByteOrder> LexedHeader<'data, E> {
     pub(crate) fn data_shape(&self) -> DataShape {
         match self {
-            Header::Old(header) => &header.flags,
-            Header::New(header) => &header.flags,
+            LexedHeader::Old(header) => &header.flags,
+            LexedHeader::New(header) => &header.flags,
         }
         .data_shape()
+    }
+
+    // The number of subfiles is only stored in the new-style header
+    pub(crate) fn number_of_subfiles(&self) -> Option<usize> {
+        match self {
+            LexedHeader::New(header) => {
+                // If the flags indicate it is not multifile then there are no subfiles
+                // and we return one, else we get it from the header
+                if header.flags.multifile() {
+                    let num: u32 = header.spectra.into();
+                    Some(num as usize)
+                } else {
+                    Some(1)
+                }
+            }
+            // In an old-style header the flags are the same, so we can confirm whether the data is
+            // multifile, but there is no field in the header storing the number of files to be
+            // expected.
+            LexedHeader::Old(header) => {
+                if header.flags.multifile() {
+                    None
+                } else {
+                    Some(1)
+                }
+            }
+        }
     }
 
     // Only relevent if not xyxy type, so should improve this api
     pub(crate) fn number_points(&self) -> usize {
         match self {
-            Header::Old(header) => {
+            LexedHeader::Old(header) => {
                 let num: f32 = header.number_points.into();
                 num as usize
             }
-            Header::New(header) => {
+            LexedHeader::New(header) => {
                 let num: u32 = header.number_points.into();
                 num as usize
             }
@@ -92,19 +106,43 @@ impl<'data, E: ByteOrder> Header<'data, E> {
     }
 
     // Only relevent if not xyxy type, so should improve this api
-    pub(crate) fn y_precision(&self) -> Precision {
+    pub(crate) fn exponent(&self) -> i16 {
         match self {
-            Header::Old(header) => &header.flags,
-            Header::New(header) => &header.flags,
+            LexedHeader::Old(header) => {
+                let num: i16 = header.exponent_y.into();
+                num
+            }
+            LexedHeader::New(header) => {
+                let num: i8 = header.exponent_y.into();
+                num as i16
+            }
         }
-        .y_precision()
+    }
+
+    // Only relevent if not xyxy type, so should improve this api
+    pub(crate) fn y_mode(&self) -> YMode {
+        // If fexpr is - 128 the data should be interpreted as a set of floats
+        if self.exponent() == 0x80 {
+            YMode::IEEEFloat
+        } else {
+            let precision = match self {
+                LexedHeader::Old(header) => header.flags,
+                LexedHeader::New(header) => header.flags,
+            }
+            .y_precision();
+
+            match precision {
+                Precision::SixteenBit => YMode::SixteenBitInt,
+                Precision::ThirtyTwoBit => YMode::ThirtyTwoBitInt,
+            }
+        }
     }
 
     // Only relevent if not xyxy type, so should improve this api
     pub(crate) fn log_offset(&self) -> Option<usize> {
         match self {
-            Header::Old(_) => None,
-            Header::New(header) => {
+            LexedHeader::Old(_) => None,
+            LexedHeader::New(header) => {
                 let log_offset: u32 = header.log_offset.into();
                 if log_offset == 0 {
                     None
@@ -117,19 +155,51 @@ impl<'data, E: ByteOrder> Header<'data, E> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum ParsedHeader {
+pub(crate) enum Header {
     // Headers created by SPC software pre-1996 with file version 0x4b
-    Old(ParsedOldFormatHeader),
+    Old(OldFormatHeader),
     // Headers created by SPC software post with file versions 0x4c of 0x4d
-    New(ParsedNewFormatHeader),
+    New(NewFormatHeader),
 }
 
-impl<E: ByteOrder> Header<'_, E> {
-    pub(crate) fn parse(self) -> Result<ParsedHeader, HeaderParseError> {
+impl<E: ByteOrder> TryParse for LexedHeader<'_, E> {
+    type Parsed = Header;
+    type Error = HeaderParseError;
+    fn try_parse(&self) -> Result<Self::Parsed, Self::Error> {
         Ok(match self {
-            Header::Old(header) => ParsedHeader::Old(header.parse()?),
-            Header::New(header) => ParsedHeader::New(header.parse()?),
+            LexedHeader::Old(header) => Header::Old(header.try_parse()?),
+            LexedHeader::New(header) => Header::New(header.try_parse()?),
         })
+    }
+}
+
+impl Header {
+    pub(crate) fn exponent_y(&self) -> i32 {
+        match self {
+            Header::Old(header) => header.exponent_y as i32,
+            Header::New(header) => header.exponent_y as i32,
+        }
+    }
+
+    pub(crate) fn number_points(&self) -> usize {
+        match self {
+            Header::Old(header) => header.number_points as usize,
+            Header::New(header) => header.number_points as usize,
+        }
+    }
+
+    pub(crate) fn starting_x(&self) -> f64 {
+        match self {
+            Header::Old(header) => header.starting_x as f64,
+            Header::New(header) => header.starting_x as f64,
+        }
+    }
+
+    pub(crate) fn ending_x(&self) -> f64 {
+        match self {
+            Header::Old(header) => header.ending_x as f64,
+            Header::New(header) => header.ending_x as f64,
+        }
     }
 }
 
@@ -166,7 +236,7 @@ impl<E: ByteOrder> Header<'_, E> {
 /// rather than a double and the x-limits are only stored in single precision.
 #[repr(C)]
 #[derive(Clone, Debug, KnownLayout, Immutable, TryFromBytes)]
-pub(crate) struct OldFormatHeader<E: ByteOrder> {
+pub(crate) struct LexedOldFormatHeader<E: ByteOrder> {
     /// The [`FlagParameters`] for the .SPC
     pub(super) flags: FlagParameters,
     pub(super) version: u8,
@@ -208,7 +278,7 @@ pub(crate) struct OldFormatHeader<E: ByteOrder> {
     pub(super) xyz_labels: [u8; 30],
 }
 
-fn str_from_null_terminated_utf8_safe(s: &[u8]) -> &str {
+pub(crate) fn str_from_null_terminated_utf8_safe(s: &[u8]) -> &str {
     if s.iter().any(|&x| x == 0) {
         unsafe { str_from_null_terminated_utf8(s) }
     } else {
@@ -228,13 +298,15 @@ unsafe fn str_from_null_terminated_utf8_unchecked(s: &[u8]) -> &str {
     ::std::str::from_utf8_unchecked(::std::ffi::CStr::from_ptr(s.as_ptr() as *const _).to_bytes())
 }
 
-impl<E: ByteOrder> OldFormatHeader<E> {
-    fn parse(&self) -> Result<ParsedOldFormatHeader, HeaderParseError> {
+impl<E: ByteOrder> TryParse for LexedOldFormatHeader<E> {
+    type Parsed = OldFormatHeader;
+    type Error = HeaderParseError;
+    fn try_parse(&self) -> Result<Self::Parsed, Self::Error> {
         // Check for validity
         if self.spare.iter().any(|&x| x != 0.0) {
             return Err(HeaderParseError::SpareNonZero);
         }
-        Ok(ParsedOldFormatHeader {
+        Ok(OldFormatHeader {
             flags: self.flags,
             version: self.version,
             exponent_y: self.exponent_y.into(),
@@ -303,7 +375,7 @@ impl<E: ByteOrder> OldFormatHeader<E> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ParsedOldFormatHeader {
+pub(crate) struct OldFormatHeader {
     /// The [`FlagParameters`] for the .SPC
     pub(super) flags: FlagParameters,
     pub(super) version: u8,
@@ -382,7 +454,7 @@ pub(crate) struct ParsedOldFormatHeader {
 /// - Byte: W axis units
 /// - Char[187]: Reserved
 #[derive(Clone, Debug, KnownLayout, Immutable, TryFromBytes)]
-pub(crate) struct NewFormatHeader<E: ByteOrder> {
+pub(crate) struct LexedNewFormatHeader<E: ByteOrder> {
     /// Flag parameters are packend into a single byte
     pub(super) flags: FlagParameters,
     /// File version for a New Format SPC File.
@@ -432,8 +504,11 @@ pub(crate) struct NewFormatHeader<E: ByteOrder> {
     pub(super) reserved: [u8; 187],
 }
 
-impl<E: ByteOrder> NewFormatHeader<E> {
-    fn parse(&self) -> Result<ParsedNewFormatHeader, HeaderParseError> {
+impl<E: ByteOrder> TryParse for LexedNewFormatHeader<E> {
+    type Parsed = NewFormatHeader;
+    type Error = HeaderParseError;
+
+    fn try_parse(&self) -> Result<Self::Parsed, Self::Error> {
         // Check for validity
         if self.spare.iter().any(|&x| x != 0.0) {
             return Err(HeaderParseError::SpareNonZero);
@@ -443,7 +518,7 @@ impl<E: ByteOrder> NewFormatHeader<E> {
             return Err(HeaderParseError::ReservedNonZero);
         }
 
-        Ok(ParsedNewFormatHeader {
+        Ok(NewFormatHeader {
             flags: self.flags,
             file_version: self.file_version,
             instrument_technique: InstrumentTechnique::new(self.instrument_technique)?,
@@ -538,7 +613,7 @@ impl<E: ByteOrder> NewFormatHeader<E> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ParsedNewFormatHeader {
+pub(crate) struct NewFormatHeader {
     /// Flag parameters are packend into a single byte
     pub(super) flags: FlagParameters,
     /// File version for a New Format SPC File.

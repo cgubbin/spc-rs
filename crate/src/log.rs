@@ -1,66 +1,101 @@
-use crate::SPCFile;
+use zerocopy::{byteorder::U32, ByteOrder, Immutable, KnownLayout, TryFromBytes};
 
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-pub(crate) enum LogBlockParseError {
-    #[error("Premature termination of binary input")]
-    PrematureTermination,
+use crate::{header::str_from_null_terminated_utf8_safe, parse::TryParse};
+
+#[derive(Clone, Debug, KnownLayout, Immutable, TryFromBytes)]
+pub(crate) struct LexedLogHeader<E: ByteOrder> {
+    // Size of disk block in bytes
+    size: U32<E>,
+    // Size of memory block in bytes
+    memory_size: U32<E>,
+    // Byte offset to the text
+    text_offset: U32<E>,
+    // Byte size of the binary area (immediately after logstc)
+    binary_size: U32<E>,
+    // Byte size of the disk area (immediately after logbins)
+    disk_area: U32<E>,
+    // Reserved, must be set to zero
+    reserved: [u8; 44],
 }
 
-pub(crate) struct LogBlockParser<'a, 'de>(pub(crate) &'a mut SPCFile<'de>);
+impl<E: ByteOrder> LexedLogHeader<E> {
+    pub(super) fn binary_size(&self) -> usize {
+        let binary_size: u32 = self.binary_size.into();
+        binary_size as usize
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LexedLogBlock<'data, E: ByteOrder> {
+    pub(super) header: &'data LexedLogHeader<E>,
+    pub(super) data: &'data [u8],
+    pub(super) text: &'data [u8],
+}
+
+#[derive(Clone, Debug, KnownLayout, Immutable, TryFromBytes)]
+pub(crate) struct LogHeader {
+    // Size of disk block in bytes
+    size: u32,
+    // Size of memory block in bytes
+    memory_size: u32,
+    // Byte offset to the text
+    text_offset: u32,
+    // Byte size of the binary area (immediately after logstc)
+    binary_size: u32,
+    // Byte size of the disk area (immediately after logbins)
+    disk_area: u32,
+    // Reserved, must be set to zero
+    reserved: [u8; 44],
+}
+
+#[derive(Clone, Debug, thiserror::Error, miette::Diagnostic)]
+pub(crate) enum LogHeaderParseError {
+    #[error("the reserved bytes were not set to zero")]
+    NonZeroReservedBytes,
+    #[error("the log block memory size was not a multiple of 4096: found {0}")]
+    InvalidMemorySize(u32),
+}
+
+impl<E: ByteOrder> TryParse for LexedLogHeader<E> {
+    type Parsed = LogHeader;
+    type Error = LogHeaderParseError;
+    fn try_parse(&self) -> Result<Self::Parsed, Self::Error> {
+        if self.reserved.iter().any(|val| *val != 0) {
+            return Err(LogHeaderParseError::NonZeroReservedBytes);
+        }
+        if self.memory_size % 4096 != 0 {
+            return Err(LogHeaderParseError::InvalidMemorySize(
+                self.memory_size.get(),
+            ));
+        }
+        Ok(LogHeader {
+            size: self.size.get(),
+            memory_size: self.memory_size.get(),
+            text_offset: self.text_offset.get(),
+            binary_size: self.binary_size.get(),
+            disk_area: self.disk_area.get(),
+            reserved: self.reserved,
+        })
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct LogBlock {
-    header: LogHeader,
-    data: String,
-    text: String,
+    pub(super) header: LogHeader,
+    pub(super) data: Vec<u8>,
+    pub(super) text: String,
 }
 
-#[derive(Clone, Debug)]
-struct LogHeader {
-    size: u32,
-    memory_size: u32,
-    text_offset: u32,
-    binary_size: u32,
-    disk_area: u32,
-    reserved: String,
-}
-
-impl<'a, 'de> LogBlockParser<'a, 'de> {
-    fn read_u32(&mut self) -> Result<u32, LogBlockParseError> {
-        self.0
-            .read_u32()
-            .ok_or(LogBlockParseError::PrematureTermination)
-    }
-
-    fn read_unescaped_utf8(&mut self, size: usize) -> Result<&'de str, LogBlockParseError> {
-        self.0
-            .read_unescaped_utf8(size)
-            .ok_or(LogBlockParseError::PrematureTermination)
-    }
-
-    pub(crate) fn parse(&mut self, log_offset: usize) -> Result<LogBlock, LogBlockParseError> {
-        let header = LogHeader {
-            size: self.read_u32()?,
-            memory_size: self.read_u32()?,
-            text_offset: self.read_u32()?,
-            binary_size: self.read_u32()?,
-            disk_area: self.read_u32()?,
-            reserved: self.read_unescaped_utf8(44)?.trim().to_string(),
-        };
-
-        let log_data = self
-            .read_unescaped_utf8(header.binary_size as usize)?
-            .to_string();
-        self.0.goto(log_offset + header.text_offset as usize);
-        let log_ascii = self
-            .read_unescaped_utf8(header.size as usize - header.text_offset as usize)?
-            .trim()
-            .to_string();
-
+impl<E: ByteOrder> TryParse for LexedLogBlock<'_, E> {
+    type Error = LogHeaderParseError;
+    type Parsed = LogBlock;
+    fn try_parse(&self) -> Result<Self::Parsed, Self::Error> {
         Ok(LogBlock {
-            header,
-            data: log_data,
-            text: log_ascii,
+            header: self.header.try_parse()?,
+            data: self.data.to_owned(),
+            text: str_from_null_terminated_utf8_safe(self.text)
+                .trim()
+                .to_owned(),
         })
     }
 }

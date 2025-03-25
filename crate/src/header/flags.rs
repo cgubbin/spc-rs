@@ -38,6 +38,7 @@ pub(crate) enum DataShape {
     XYXY,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub(crate) enum Precision {
     SixteenBit,
     ThirtyTwoBit,

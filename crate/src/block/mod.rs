@@ -1,217 +1,312 @@
-/// The main body of an SPC file is the Block. Each block describes a unique trace, containing a
-/// set of x-y variables. An SPC file can contain one or more blocks.
-use crate::{
-    header::{DataShape, NewFormatHeader, OldFormatHeader, SubHeaderParseError, SubHeaderParser},
-    SPCFile,
+use std::marker::PhantomData;
+
+use zerocopy::{
+    byteorder::{F32, I16, I32, U32},
+    BigEndian, ByteOrder, Immutable, KnownLayout, LittleEndian, TryFromBytes,
 };
 
-mod variables;
+use crate::{
+    header::{LexedSubheader, Precision, Subheader, SubheaderParseError},
+    parse::{Parse, TryParse},
+};
 
-use variables::{FromTo, MeasurementXYVariables};
-
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-pub(crate) enum BlockParseError {
-    #[error("Premature termination of binary input")]
-    PrematureTermination,
-    #[error("Error parsing subheader: {0:?}")]
-    Subheader(#[from] SubHeaderParseError),
+#[derive(Clone, Debug, KnownLayout, Immutable, TryFromBytes)]
+pub(crate) struct LexedDirectory<E: ByteOrder> {
+    ssfposn: U32<E>,
+    ssfsize: U32<E>,
+    ssftime: F32<E>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Block(Vec<MeasurementXYVariables>);
+pub(crate) struct Directory {
+    ssfposn: u32,
+    ssfsize: u32,
+    ssftime: f32,
+}
 
-impl Block {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &MeasurementXYVariables> {
-        self.0.iter()
+impl<E: ByteOrder> Parse for LexedDirectory<E> {
+    type Parsed = Directory;
+    fn parse(&self) -> Self::Parsed {
+        Directory {
+            ssfposn: self.ssfposn.get(),
+            ssfsize: self.ssfsize.get(),
+            ssftime: self.ssftime.get(),
+        }
     }
 }
 
-pub(crate) struct BlockParser<'a, 'de>(pub(crate) &'a mut SPCFile<'de>);
+#[derive(Clone, Debug)]
+pub(crate) struct LexedXData<'data, E: ByteOrder> {
+    data: &'data [u8],
+    byte_order: PhantomData<E>,
+}
 
-impl<'a, 'de> BlockParser<'a, 'de> {
-    fn read_byte(&mut self) -> Result<u8, BlockParseError> {
-        self.0
-            .read_byte()
-            .ok_or(BlockParseError::PrematureTermination)
+impl<'data, E: ByteOrder> LexedXData<'data, E> {
+    pub(super) fn new(data: &'data [u8]) -> miette::Result<Self> {
+        if data.len() % 4 != 0 {
+            miette::bail!("x-data is a list of 32-bit floats, so the underlying data must contain a multiple of 4 bytes");
+        }
+        Ok(Self {
+            data,
+            byte_order: PhantomData,
+        })
     }
+}
 
-    fn read_i16(&mut self) -> Result<i16, BlockParseError> {
-        self.0
-            .read_i16()
-            .ok_or(BlockParseError::PrematureTermination)
+#[derive(Clone, Debug)]
+pub(crate) struct XData(Vec<f32>);
+
+impl<E: ByteOrder> Parse for LexedXData<'_, E> {
+    type Parsed = XData;
+    fn parse(&self) -> Self::Parsed {
+        let data = self
+            .data
+            .chunks_exact(4)
+            .map(|each| F32::<E>::from_bytes(each.try_into().unwrap()))
+            .map(|each| each.get())
+            .collect();
+
+        XData(data)
     }
+}
 
-    fn read_i32(&mut self) -> Result<i32, BlockParseError> {
-        self.0
-            .read_i32()
-            .ok_or(BlockParseError::PrematureTermination)
+#[derive(Clone, Debug)]
+pub(crate) enum YMode {
+    SixteenBitInt,
+    ThirtyTwoBitInt,
+    IEEEFloat,
+}
+
+impl YMode {
+    pub(crate) fn bytes_per_point(&self) -> usize {
+        match self {
+            Self::SixteenBitInt => 2,
+            Self::ThirtyTwoBitInt => 4,
+            Self::IEEEFloat => 4,
+        }
     }
+}
 
-    fn read_f32(&mut self) -> Result<f32, BlockParseError> {
-        self.0
-            .read_f32()
-            .ok_or(BlockParseError::PrematureTermination)
+#[derive(Clone, Debug)]
+pub(crate) struct LexedSubfile<'data, E: ByteOrder> {
+    pub(super) subheader: &'data LexedSubheader<E>,
+    pub(super) data: &'data [u8],
+    pub(super) mode: YMode,
+}
+
+impl<'data, E: ByteOrder> LexedSubfile<'data, E> {
+    pub(super) fn new(
+        subheader: &'data LexedSubheader<E>,
+        data: &'data [u8],
+        mode: YMode,
+    ) -> miette::Result<Self> {
+        let bytes_per_point = mode.bytes_per_point();
+
+        // TODO: We can't check the number of points here if it's provided in the header rather
+        // than the subheader, it's opaque atm how often this happens.
+        if (subheader.number_of_points() != 0)
+            & (data.len() / bytes_per_point != subheader.number_of_points())
+        {
+            miette::bail!("y-data is a list of 32-bit floats, or 16-bit integers so the underlying data must contain a multiple of 2 or 4 bytes");
+        }
+
+        Ok(Self {
+            subheader,
+            data,
+            mode,
+        })
     }
+}
 
-    pub(crate) fn parse_old_block(
-        &mut self,
-        header: &OldFormatHeader,
-    ) -> Result<Block, BlockParseError> {
-        let x_points = FromTo {
-            from: header.starting_x as f64,
-            to: header.ending_x as f64,
-            length: header.number_points as usize,
+#[derive(Clone, Debug)]
+pub(crate) enum YData {
+    SixteenBitInteger(Vec<i16>),
+    ThirtyTwoBitInteger(Vec<i32>),
+    Float(Vec<f64>),
+}
+
+impl YData {
+    fn len(&self) -> usize {
+        match self {
+            Self::SixteenBitInteger(vals) => vals.len(),
+            Self::ThirtyTwoBitInteger(vals) => vals.len(),
+            Self::Float(vals) => vals.len(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Subfile {
+    pub(super) subheader: Subheader,
+    pub(super) data: YData,
+}
+
+impl<E: ByteOrder> TryParse for LexedSubfile<'_, E> {
+    type Parsed = Subfile;
+    type Error = SubheaderParseError;
+    fn try_parse(&self) -> Result<Self::Parsed, Self::Error> {
+        let data = match self.mode {
+            YMode::SixteenBitInt => YData::SixteenBitInteger(
+                self.data
+                    .chunks_exact(2)
+                    .map(|each| I16::<E>::from_bytes(each.try_into().unwrap()))
+                    .map(|each| each.get())
+                    .collect(),
+            ),
+            YMode::ThirtyTwoBitInt => YData::ThirtyTwoBitInteger(
+                self.data
+                    .chunks_exact(4)
+                    .map(|each| {
+                        let first = I16::<E>::from_bytes([each[0], each[1]]);
+                        let second = I16::<E>::from_bytes([each[2], each[3]]);
+                        ((first.get() as i32) << 16) + second.get() as i32
+                    })
+                    .collect(),
+            ),
+            YMode::IEEEFloat => YData::Float(
+                self.data
+                    .chunks_exact(4)
+                    .map(|each| F32::<E>::from_bytes(each.try_into().unwrap()))
+                    .map(|each| each.get() as f64)
+                    .collect(),
+            ),
         };
 
-        let mut spectra = Vec::new();
-
-        while !self.0.is_exhausted() {
-            let mut subheader = SubHeaderParser(self.0).parse()?;
-
-            if subheader.exponent_y == 0 {
-                subheader.exponent_y = header.exponent_y as i8;
-            }
-
-            let y = self.get_old_y(
-                x_points.length,
-                subheader.exponent_y,
-                header.flags.y_precision_is_16_bit(),
-            )?;
-
-            let data = MeasurementXYVariables::new(x_points.values(), y, header);
-            spectra.push(data);
-        }
-
-        Ok(Block(spectra))
+        Ok(Subfile {
+            subheader: self.subheader.try_parse()?,
+            data,
+        })
     }
+}
 
-    fn get_old_y(
-        &mut self,
-        length: usize,
-        exponent_y: i8,
-        y_16_bit_precision: bool,
-    ) -> Result<Vec<f64>, BlockParseError> {
-        let factor = 2f64.powi(exponent_y as i32 - if y_16_bit_precision { 16 } else { 32 });
+#[derive(Clone)]
+pub(crate) enum LexedBlock<'data, E: ByteOrder> {
+    Y(LexedSubfile<'data, E>),
+    YY(Vec<LexedSubfile<'data, E>>),
+    XY {
+        x: LexedXData<'data, E>,
+        y: LexedSubfile<'data, E>,
+    },
+    XYY {
+        x: LexedXData<'data, E>,
+        ys: Vec<LexedSubfile<'data, E>>,
+    },
+    XYXY {
+        data: Vec<(LexedXData<'data, E>, LexedSubfile<'data, E>)>,
+        directory: Option<Vec<&'data LexedDirectory<E>>>,
+    },
+}
 
-        let mut result = Vec::with_capacity(length);
+#[derive(Clone)]
+pub(crate) enum Block {
+    Y(Subfile),
+    YY(Vec<Subfile>),
+    XY {
+        x: XData,
+        y: Subfile,
+    },
+    XYY {
+        x: XData,
+        ys: Vec<Subfile>,
+    },
+    XYXY {
+        data: Vec<(XData, Subfile)>,
+        directory: Option<Vec<Directory>>,
+    },
+}
 
-        for _ in 0..length {
-            result.push(if y_16_bit_precision {
-                self.read_i16()? as f64 * factor
-            } else {
-                (((self.read_byte()? as u64) << 16)
-                    + ((self.read_byte()? as u64) << 24)
-                    + (self.read_byte()? as u64)
-                    + ((self.read_byte()? as u64) << 8)) as f64
-                    * factor
-            });
-        }
-
-        Ok(result)
+impl<E: ByteOrder> TryParse for LexedBlock<'_, E> {
+    type Parsed = Block;
+    type Error = SubheaderParseError;
+    fn try_parse(&self) -> Result<Self::Parsed, Self::Error> {
+        Ok(match self {
+            Self::Y(subfile) => Block::Y(subfile.try_parse()?),
+            Self::YY(subfiles) => Block::YY(
+                subfiles
+                    .iter()
+                    .map(TryParse::try_parse)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::XY { x, y } => Block::XY {
+                x: x.parse(),
+                y: y.try_parse()?,
+            },
+            Self::XYY { x, ys } => Block::XYY {
+                x: x.parse(),
+                ys: ys
+                    .iter()
+                    .map(TryParse::try_parse)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            Self::XYXY { data, directory } => Block::XYXY {
+                data: data
+                    .iter()
+                    .map(|(x, y)| y.try_parse().map(|y| (x.parse(), y)))
+                    .collect::<Result<Vec<_>, _>>()?,
+                directory: directory
+                    .clone()
+                    .map(|directorys| directorys.into_iter().map(Parse::parse).collect()),
+            },
+        })
     }
+}
 
-    pub(crate) fn parse_new_block(
-        &mut self,
-        header: &NewFormatHeader,
-    ) -> Result<Block, BlockParseError> {
-        let datashape = header.flags.data_shape();
-
-        let x_points: Vec<f64> = match datashape {
-            // For these shapes, x-data comes before the subheader
-            DataShape::XY | DataShape::XYY => (0..header.number_points)
-                .map(|_| self.read_f32())
-                .map(|each| each.map(|val| val.into()))
-                .collect::<Result<Vec<_>, _>>()?,
-            // No x-axis, so we create it
-            DataShape::Y | DataShape::YY => {
-                let x = FromTo {
-                    from: header.starting_x as f64,
-                    to: header.ending_x as f64,
-                    length: header.number_points as usize,
-                };
-                x.values()
+impl<'data, E: ByteOrder> ::std::fmt::Debug for LexedBlock<'data, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LexedBlock::Y(subfile) => {
+                writeln!(
+                    f,
+                    "y-data type, with {} data points ",
+                    subfile.data.len() / subfile.mode.bytes_per_point(),
+                )?;
             }
-            // In XYXY x-data is provided after each subheader
-            DataShape::XYXY => {
-                return self.parse_xyxy(header);
+            LexedBlock::YY(subfiles) => {
+                writeln!(f, "yy-data type, {} subfiles", subfiles.len())?;
             }
-        };
-
-        let mut spectra = Vec::new();
-
-        for i in 0..header.spectra {
-            let mut subheader = SubHeaderParser(self.0).parse()?;
-            if subheader.exponent_y == 0 {
-                subheader.exponent_y = header.exponent_y as i8;
+            LexedBlock::XY { x, .. } => {
+                writeln!(f, "xy-data type, {} data points", x.data.len())?;
             }
-
-            let y = self.get_new_y(
-                x_points.len(),
-                subheader.exponent_y,
-                header.flags.y_precision_is_16_bit(),
-            )?;
-
-            // TODO: Interface and one function
-            let data = MeasurementXYVariables::new_new(x_points.clone(), y, header);
-
-            spectra.push(data);
+            LexedBlock::XYY { x, ys } => {
+                writeln!(
+                    f,
+                    "xyy-data type, {} data points and {} subfiles",
+                    x.data.len(),
+                    ys.len()
+                )?;
+            }
+            LexedBlock::XYXY { data, .. } => {
+                writeln!(f, "xyxy-data type, with {} subfiles", data.len(),)?;
+            }
         }
-
-        Ok(Block(spectra))
+        Ok(())
     }
+}
 
-    pub(crate) fn parse_xyxy(
-        &mut self,
-        header: &NewFormatHeader,
-    ) -> Result<Block, BlockParseError> {
-        let mut spectra = Vec::new();
-
-        for _ in 0..header.spectra {
-            let mut subheader = SubHeaderParser(self.0).parse()?;
-            if subheader.exponent_y == 0 {
-                subheader.exponent_y = header.exponent_y as i8;
+impl ::std::fmt::Debug for Block {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Block::Y(subfile) => {
+                writeln!(f, "y-data type, with {} data points ", subfile.data.len())?;
             }
-
-            let x_points = (0..header.number_points)
-                .map(|_| self.read_f32())
-                .map(|each| each.map(|val| val.into()))
-                .collect::<Result<Vec<f64>, _>>()?;
-
-            let y = self.get_new_y(
-                x_points.len(),
-                subheader.exponent_y,
-                header.flags.y_precision_is_16_bit(),
-            )?;
-
-            // TODO: Interface and one function
-            let data = MeasurementXYVariables::new_new(x_points, y, header);
-
-            spectra.push(data);
+            Block::YY(subfiles) => {
+                writeln!(f, "yy-data type, {} subfiles", subfiles.len())?;
+            }
+            Block::XY { x, .. } => {
+                writeln!(f, "xy-data type, {} data points", x.0.len())?;
+            }
+            Block::XYY { x, ys } => {
+                writeln!(
+                    f,
+                    "xyy-data type, {} data points and {} subfiles",
+                    x.0.len(),
+                    ys.len()
+                )?;
+            }
+            Block::XYXY { data, .. } => {
+                writeln!(f, "xyxy-data type, with {} subfiles", data.len(),)?;
+            }
         }
-
-        Ok(Block(spectra))
-    }
-
-    fn get_new_y(
-        &mut self,
-        length: usize,
-        exponent_y: i8,
-        y_16_bit_precision: bool,
-    ) -> Result<Vec<f64>, BlockParseError> {
-        let factor = 2f64.powi(exponent_y as i32 - if y_16_bit_precision { 16 } else { 32 });
-
-        let mut result = Vec::with_capacity(length);
-        for _ in 0..length {
-            result.push(if y_16_bit_precision {
-                self.read_i16()? as f64 * factor
-            } else {
-                if exponent_y != -128 {
-                    self.read_i32()? as f64 * factor
-                } else {
-                    self.read_f32()? as f64
-                }
-            });
-        }
-        Ok(result)
+        Ok(())
     }
 }
