@@ -1,4 +1,3 @@
-use clap::Error;
 
 /// The [`InstrumentTechnique`] represents all the possible values taken by the third byte in a new
 /// style header

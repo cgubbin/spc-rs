@@ -43,7 +43,7 @@ pub(crate) enum HeaderParseError {
     #[error("Invalid value for yType: {0:?}")]
     InvalidYType(#[from] yTypeCreationError),
     #[error("Invalid value for instrument technique: {0:?}")]
-    InvalidInstrutmentTechnique(#[from] InstrumentTechniqueCreationError),
+    InvalidInstrumentTechnique(#[from] InstrumentTechniqueCreationError),
 }
 
 /// The header of an SPC file has two formats, depending on the version of software which created

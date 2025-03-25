@@ -1,12 +1,11 @@
 use std::marker::PhantomData;
 
 use zerocopy::{
-    byteorder::{F32, I16, I32, U32},
-    BigEndian, ByteOrder, Immutable, KnownLayout, LittleEndian, TryFromBytes,
+    byteorder::{F32, I16, U32}, ByteOrder, Immutable, KnownLayout, TryFromBytes,
 };
 
 use crate::{
-    header::{LexedSubheader, Precision, Subheader, SubheaderParseError},
+    header::{LexedSubheader, Subheader, SubheaderParseError},
     parse::{Parse, TryParse},
 };
 

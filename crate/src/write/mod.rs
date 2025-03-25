@@ -5,8 +5,6 @@ use serde::Serialize;
 
 use crate::{
     block::{Block, YData},
-    header::{NewFormatHeader, OldFormatHeader},
-    log::LogBlock,
     ParsedSPC,
 };
 

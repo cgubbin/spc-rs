@@ -1,8 +1,4 @@
-use std::{
-    io::{Bytes, Read},
-    ptr::read,
-};
-
+#[allow(dead_code)]
 use block::{Block, LexedBlock, LexedDirectory, LexedSubfile, LexedXData, YMode};
 use camino::Utf8Path;
 use header::{
@@ -11,7 +7,7 @@ use header::{
 };
 use log::{LexedLogBlock, LexedLogHeader, LogBlock};
 use miette::IntoDiagnostic;
-use parse::{Parse, ParseError, TryParse};
+use parse::{ParseError, TryParse};
 
 mod block;
 mod header;

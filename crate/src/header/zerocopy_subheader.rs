@@ -3,7 +3,7 @@ use zerocopy::{
     ByteOrder, Immutable, KnownLayout, TryFromBytes,
 };
 
-use crate::parse::{Parse, TryParse};
+use crate::parse::TryParse;
 
 #[derive(Clone, Debug, thiserror::Error, miette::Diagnostic)]
 pub(crate) enum SubheaderParseError {
