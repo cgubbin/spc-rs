@@ -624,7 +624,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spc-rs"
+name = "spcrs"
 version = "0.1.0"
 dependencies = [
  "camino",

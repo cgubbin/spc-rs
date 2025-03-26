@@ -1,5 +1,5 @@
 [package]
-name = "spc-rs"
+name = "spcrs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Christopher Gubbin <chris.gubbin@gmail.com>"]
@@ -12,7 +12,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [[bin]]
-name = "spc"
+name = "spcrs"
 path = "crates/cli/src/main.rs"
 
 [workspace.dependencies]
