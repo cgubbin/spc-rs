@@ -1,8 +1,9 @@
 /scratch
 /.direnv
+/crate/test_data
 /crate/target
 /doc
 *.DS_Store
 *.png
 /calibrator/target
-./test_data/*
+/test_data

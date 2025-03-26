@@ -1,21 +1,10 @@
 [package]
-name = "spc-rs"
+name = "spc-cli"
 version = "0.1.0"
 edition = "2021"
 authors = ["Christopher Gubbin <cgubbin@sensoriumtl.com>"]
 exclude = [".github/", "/ci/"]
 
-[workspace]
-resolver = "2"
-members = ["crates/*"]
-
-[[bin]]
-name = "spc"
-path = "crates/cli/src/main.rs"
-
-[workspace.dependencies]
-log = "0.4.26"
-miette = { version = "7.5.0", features = ["fancy"] }
 
 [dependencies]
 camino = "1.1.9"
@@ -24,4 +13,4 @@ env_logger = "0.11.7"
 fs-err = "3.1.0"
 log.workspace = true
 miette = { workspace = true, features = ["fancy"] }
-spc-core = { path = "crates/core" }
+spc-core = { path = "../core" }

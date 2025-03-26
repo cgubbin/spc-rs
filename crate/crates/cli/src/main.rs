@@ -7,7 +7,7 @@ use fs_err::File;
 use log::LevelFilter;
 use miette::{Context, IntoDiagnostic};
 
-use spc_rs::{parse, write_spc};
+use spc_core::{parse, write_spc};
 
 #[derive(Debug, Parser)]
 struct Args {
