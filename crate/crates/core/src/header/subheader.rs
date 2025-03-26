@@ -141,7 +141,7 @@ mod test {
 
     #[test]
     fn water_refractive_index_subheader_parses_correctly() {
-        let data = include_bytes!("../../test_data/subheader/WTERN95SUBHEADER.SPC");
+        let data = include_bytes!("../../../../test_data/subheader/WTERN95SUBHEADER.SPC");
         let result = GuardedLexedSubheader::try_ref_from_bytes(data);
 
         assert!(result.is_ok());
@@ -152,7 +152,7 @@ mod test {
     }
     #[test]
     fn water_absorption_coefficient_subheader() {
-        let data = include_bytes!("../../test_data/subheader/WTERK95SUBHEADER.SPC");
+        let data = include_bytes!("../../../../test_data/subheader/WTERK95SUBHEADER.SPC");
 
         let result = GuardedLexedSubheader::try_ref_from_bytes(data);
 
