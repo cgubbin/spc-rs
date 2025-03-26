@@ -28,6 +28,8 @@ impl WriteSPC for CsvWriter {
 
         let exponent = spc.header.exponent_y();
 
+        println!("exponent: {:x?}", exponent);
+
         if exponent == -128 {
             panic!("no impl for float data storage");
         }

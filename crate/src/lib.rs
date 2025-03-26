@@ -7,7 +7,7 @@ use parse::ParsedSPC;
 mod block;
 mod header;
 mod lex;
-mod log;
+mod logblock;
 mod parse;
 pub(crate) mod units;
 mod write;
@@ -46,11 +46,13 @@ pub fn parse(source: &'_ [u8]) -> miette::Result<ParsedSPC> {
 }
 
 pub fn lex_big_endian_spc(source: &'_ [u8]) -> miette::Result<LexedSPC<'_, BigEndian>> {
+    log::info!("lexing big-endian SPC file");
     assert!(matches!(source.get(1).copied().unwrap(), 0x4c));
     SPCReader::big_endian(source).lex()
 }
 
 pub fn lex_little_endian_spc(source: &'_ [u8]) -> miette::Result<LexedSPC<'_, LittleEndian>> {
+    log::info!("lexing little-endian SPC file");
     assert!(matches!(source.get(1).copied().unwrap(), 0x4b | 0x4d));
     SPCReader::little_endian(source).lex()
 }

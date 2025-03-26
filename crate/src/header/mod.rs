@@ -1,7 +1,7 @@
 mod flags;
 mod subheader;
 
-pub(crate) use flags::{DataShape, Precision};
+pub(crate) use flags::{DataShape, FlagParameters, Precision};
 use miette::Diagnostic;
 pub(crate) use subheader::{LexedSubheader, Subheader, SubheaderParseError};
 use zerocopy::{
@@ -10,10 +10,9 @@ use zerocopy::{
 };
 
 use crate::{
-    block::YMode, parse::TryParse, xzwType, xzwTypeCreationError, yType, yTypeCreationError,
-    InstrumentTechnique, InstrumentTechniqueCreationError,
+    block::YMode, lex::Version, parse::TryParse, xzwType, xzwTypeCreationError, yType,
+    yTypeCreationError, InstrumentTechnique, InstrumentTechniqueCreationError,
 };
-use flags::FlagParameters;
 
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
 
@@ -57,6 +56,13 @@ pub(crate) enum LexedHeader<'data, E: ByteOrder> {
 }
 
 impl<E: ByteOrder> LexedHeader<'_, E> {
+    pub(crate) fn file_version(&self) -> u8 {
+        match self {
+            LexedHeader::Old(header) => header.version.into(),
+            LexedHeader::New(header) => header.file_version,
+        }
+    }
+
     pub(crate) fn data_shape(&self) -> DataShape {
         match self {
             LexedHeader::Old(header) => &header.flags,
@@ -133,7 +139,11 @@ impl<E: ByteOrder> LexedHeader<'_, E> {
 
             match precision {
                 Precision::SixteenBit => YMode::SixteenBitInt,
-                Precision::ThirtyTwoBit => YMode::ThirtyTwoBitInt,
+                Precision::ThirtyTwoBit => match self.file_version() {
+                    0x4d => YMode::ThirtyTwoBitInt(Version::Old),
+                    0x4b | 0x4c => YMode::ThirtyTwoBitInt(Version::New),
+                    _ => unreachable!(),
+                },
             }
         }
     }
@@ -461,6 +471,7 @@ pub(crate) struct OldFormatHeader {
 /// - Float: W plane increment
 /// - Byte: W axis units
 /// - Char[187]: Reserved
+#[repr(C)]
 #[derive(Clone, Debug, KnownLayout, Immutable, TryFromBytes)]
 pub(crate) struct LexedNewFormatHeader<E: ByteOrder> {
     /// Flag parameters are packend into a single byte

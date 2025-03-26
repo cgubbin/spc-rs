@@ -7,6 +7,7 @@ use zerocopy::{
 
 use crate::{
     header::{LexedSubheader, Subheader, SubheaderParseError},
+    lex::Version,
     parse::{Parse, TryParse},
 };
 
@@ -83,7 +84,9 @@ impl<E: ByteOrder> Parse for LexedXData<'_, E> {
 #[derive(Clone, Debug)]
 pub(crate) enum YMode {
     SixteenBitInt,
-    ThirtyTwoBitInt,
+    // The version needs to be stored here because the ordering of 32-bit integers is different in
+    // the old and new formats.
+    ThirtyTwoBitInt(Version),
     IEEEFloat,
 }
 
@@ -91,7 +94,7 @@ impl YMode {
     pub(crate) fn bytes_per_point(&self) -> usize {
         match self {
             Self::SixteenBitInt => 2,
-            Self::ThirtyTwoBitInt => 4,
+            Self::ThirtyTwoBitInt(_) => 4,
             Self::IEEEFloat => 4,
         }
     }
@@ -146,6 +149,7 @@ impl YData {
 
     pub(crate) fn decode(&self, exponent: i32) -> Vec<f64> {
         if let Self::Float(vals) = self {
+            log::info!("decoding float-like y-data");
             return vals.clone();
         }
 
@@ -154,6 +158,7 @@ impl YData {
             Self::ThirtyTwoBitInteger(_) => 32,
             _ => unreachable!(),
         };
+        log::info!("decoding integer y-data with {factor} bits");
 
         let vals: Vec<i32> = match self {
             Self::SixteenBitInteger(vals) => vals.iter().map(|each| *each as i32).collect(),
@@ -185,13 +190,24 @@ impl<E: ByteOrder> TryParse for LexedSubfile<'_, E> {
                     .map(|each| each.get())
                     .collect(),
             ),
-            YMode::ThirtyTwoBitInt => YData::ThirtyTwoBitInteger(
+            YMode::ThirtyTwoBitInt(Version::Old) => YData::ThirtyTwoBitInteger(
                 self.data
                     .chunks_exact(4)
                     .map(|each| {
                         let first = I16::<E>::from_bytes([each[0], each[1]]);
                         let second = I16::<E>::from_bytes([each[2], each[3]]);
                         ((first.get() as i32) << 16) + second.get() as i32
+                    })
+                    .collect(),
+            ),
+            YMode::ThirtyTwoBitInt(Version::New) => YData::ThirtyTwoBitInteger(
+                self.data
+                    .chunks_exact(4)
+                    .map(|each| {
+                        zerocopy::byteorder::I32::<E>::from_bytes([
+                            each[0], each[1], each[2], each[3],
+                        ])
+                        .get()
                     })
                     .collect(),
             ),

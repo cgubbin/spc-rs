@@ -1,7 +1,7 @@
 use crate::{
     block::Block,
     header::{Header, HeaderParseError, SubheaderParseError},
-    log::{LogBlock, LogHeaderParseError},
+    logblock::{LogBlock, LogHeaderParseError},
 };
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]

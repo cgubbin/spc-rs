@@ -2,7 +2,9 @@ use std::io::{BufReader, Read};
 
 use camino::Utf8PathBuf;
 use clap::Parser;
+use env_logger::Builder;
 use fs_err::File;
+use log::LevelFilter;
 use miette::{Context, IntoDiagnostic};
 
 use spc_rs::{parse, write_spc};
@@ -13,6 +15,8 @@ struct Args {
 }
 
 fn main() -> miette::Result<()> {
+    Builder::new().filter(None, LevelFilter::Info).init();
+
     match Args::try_parse() {
         Ok(args) => {
             let file = File::open(&args.file_path)

@@ -1,12 +1,12 @@
-use zerocopy::{BigEndian, ByteOrder, LittleEndian, TryFromBytes};
+use zerocopy::{BigEndian, ByteOrder, Immutable, KnownLayout, LittleEndian, TryFromBytes};
 
 use crate::{
     block::{LexedBlock, LexedDirectory, LexedSubfile, LexedXData, YMode},
     header::{
-        DataShape, LexedHeader, LexedNewFormatHeader, LexedOldFormatHeader, LexedSubheader,
-        Precision,
+        DataShape, FlagParameters, LexedHeader, LexedNewFormatHeader, LexedOldFormatHeader,
+        LexedSubheader, Precision,
     },
-    log::{LexedLogBlock, LexedLogHeader},
+    logblock::{LexedLogBlock, LexedLogHeader},
     parse::{ParseError, ParsedSPC, TryParse},
 };
 
@@ -29,8 +29,8 @@ impl<E: ByteOrder> TryParse for LexedSPC<'_, E> {
     }
 }
 
-#[derive(Debug)]
-enum Version {
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum Version {
     Old,
     New,
 }
@@ -49,7 +49,6 @@ impl<'data> SPCReader<'data, BigEndian> {
     pub(crate) fn big_endian(input: &'data [u8]) -> Self {
         let version = match input.get(1).copied().unwrap() {
             0x4c => Version::New,
-            0x4d => Version::Old,
             _ => panic!("Invalid SPC file for big endian ordering"),
         };
         Self {
@@ -88,11 +87,18 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
         self.rest.len()
     }
 
-    fn read_byte_slice(&mut self, len: usize) -> &'data [u8] {
+    fn read_byte_slice(&mut self, len: usize) -> miette::Result<&'data [u8]> {
+        if len > self.rest.len() {
+            return Err(miette::miette!(
+                "Not enough bytes left in the buffer. requested {}, remaining {}",
+                len,
+                self.rest.len()
+            ));
+        }
         let slice = &self.rest[..len];
         self.rest = &self.rest[len..];
         self.byte += len;
-        slice
+        Ok(slice)
     }
 
     fn lex_header(&mut self) -> miette::Result<LexedHeader<'data, E>> {
@@ -100,14 +106,16 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
             Version::Old => 224,
             Version::New => 512,
         };
-        let header = &self.read_byte_slice(header_len);
+        let header = &self.read_byte_slice(header_len)?;
 
         let header = match self.version {
             Version::Old => {
+                log::info!("lexing old format header");
                 let header = LexedOldFormatHeader::try_ref_from_bytes(header).unwrap();
                 LexedHeader::Old(header)
             }
             Version::New => {
+                log::info!("lexing new format header");
                 let header = LexedNewFormatHeader::try_ref_from_bytes(header).unwrap();
                 LexedHeader::New(header)
             }
@@ -116,7 +124,7 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
     }
 
     fn lex_subheader(&mut self) -> miette::Result<&'data LexedSubheader<E>> {
-        let source = self.read_byte_slice(32);
+        let source = self.read_byte_slice(32)?;
         Ok(LexedSubheader::try_ref_from_bytes(source).unwrap())
     }
 
@@ -124,7 +132,7 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
     //
     // X-data is always stored as a contiguous list of 32-bit floating point values.
     fn lex_x(&mut self, num_points: usize) -> miette::Result<LexedXData<'data, E>> {
-        let data = self.read_byte_slice(num_points * Precision::ThirtyTwoBit.bytes_per_point());
+        let data = self.read_byte_slice(num_points * Precision::ThirtyTwoBit.bytes_per_point())?;
         LexedXData::new(data)
     }
 
@@ -133,17 +141,18 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
         y_mode: YMode,
         num_points: usize,
     ) -> miette::Result<LexedSubfile<'data, E>> {
+        log::info!("lexing subfile containing {} points", num_points);
         let subheader = self.lex_subheader()?;
 
         // Check to see if the subfile overrides the header data type
         let float_expected_from_subheader = subheader.float_data_expected();
         let mode = match (y_mode, float_expected_from_subheader) {
             (YMode::SixteenBitInt, false) => YMode::SixteenBitInt,
-            (YMode::ThirtyTwoBitInt, false) => YMode::ThirtyTwoBitInt,
+            (YMode::ThirtyTwoBitInt(m), false) => YMode::ThirtyTwoBitInt(m),
             (_, true) => YMode::IEEEFloat,
             (_, false) => panic!("Inconsistent data types expected"),
         };
-        let data = self.read_byte_slice(num_points * mode.bytes_per_point());
+        let data = self.read_byte_slice(num_points * mode.bytes_per_point())?;
         LexedSubfile::new(subheader, data, mode)
     }
 
@@ -186,12 +195,13 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
 
             let mode = match (header_mode, float_expected_from_subheader) {
                 (YMode::SixteenBitInt, false) => YMode::SixteenBitInt,
-                (YMode::ThirtyTwoBitInt, false) => YMode::ThirtyTwoBitInt,
+                (YMode::ThirtyTwoBitInt(m), false) => YMode::ThirtyTwoBitInt(m),
                 (_, true) => YMode::IEEEFloat,
                 _ => panic!("Invalid mode for XYXY data"),
             };
 
-            let data = self.read_byte_slice(subheader.number_of_points() * mode.bytes_per_point());
+            let data =
+                self.read_byte_slice(subheader.number_of_points() * mode.bytes_per_point())?;
 
             subfiles.push((x_data, LexedSubfile::new(subheader, data, mode)?));
         }
@@ -206,26 +216,37 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
             // If the DataShape is Y, after the header the file consists of a single subfile
             // containing the y-data points
             DataShape::Y => {
+                log::info!("lexing Y block");
                 LexedBlock::Y(self.lex_subfile(header.y_mode(), header.number_points())?)
             }
             // If the DataShape is YY, after the header the file consists of multiple subfiles,
             // containing the y-data points for each measurement.
-            DataShape::YY => LexedBlock::YY(self.lex_subfiles(header)?),
+            DataShape::YY => {
+                log::info!("lexing YY block");
+                LexedBlock::YY(self.lex_subfiles(header)?)
+            }
             // If the DataShape is XY, after the header the file consists of a the x-data points,
             // followed by a single subfile containing the y-data points
-            DataShape::XY => LexedBlock::XY {
-                x: self.lex_x(header.number_points())?,
-                y: self.lex_subfile(header.y_mode(), header.number_points())?,
-            },
+            DataShape::XY => {
+                log::info!("lexing XY block");
+                LexedBlock::XY {
+                    x: self.lex_x(header.number_points())?,
+                    y: self.lex_subfile(header.y_mode(), header.number_points())?,
+                }
+            }
             // If the datashape is XYY then the header is followed by the (shared) x-data points,
             // then multiple subfiles containing the different sets of y-data points
-            DataShape::XYY => LexedBlock::XYY {
-                x: self.lex_x(header.number_points())?,
-                ys: self.lex_subfiles(header)?,
-            },
+            DataShape::XYY => {
+                log::info!("lexing XYY block");
+                LexedBlock::XYY {
+                    x: self.lex_x(header.number_points())?,
+                    ys: self.lex_subfiles(header)?,
+                }
+            }
             // If the datashape is XYXY then the header is followed by a number of subfiles, each
             // consisting of a header, followed by the x-data points and the y-data points
             DataShape::XYXY => {
+                log::info!("lexing XYXY block");
                 let data = self.lex_xyxy_blocks(header)?;
 
                 // XYXY data can be optionally followed by a directory structure, containing
@@ -243,6 +264,8 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
                         Some(
                             (0..data.len())
                                 .map(|_| self.read_byte_slice(12))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into_iter()
                                 .map(|source| LexedDirectory::try_ref_from_bytes(source))
                                 .collect::<Result<Vec<_>, _>>()
                                 .unwrap(),
@@ -257,6 +280,8 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
                         Some(
                             (0..data.len())
                                 .map(|_| self.read_byte_slice(12))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into_iter()
                                 .map(|source| LexedDirectory::try_ref_from_bytes(source))
                                 .collect::<Result<Vec<_>, _>>()
                                 .unwrap(),
@@ -282,7 +307,7 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
     // exhausted. This should be checked by the caller
     fn lex_log(&mut self) -> miette::Result<LexedLogBlock<'data, E>> {
         // The log header is 64 bytes
-        let source = self.read_byte_slice(64);
+        let source = self.read_byte_slice(64)?;
         let header = LexedLogHeader::try_ref_from_bytes(source).unwrap();
 
         // The log data is immediately after the header
@@ -299,10 +324,13 @@ impl<'data, E: ByteOrder> SPCReader<'data, E> {
 
     pub(super) fn lex(&mut self) -> miette::Result<LexedSPC<'data, E>> {
         // Lex the header, but don't parse yet
+        log::info!("lexing header");
         let header = self.lex_header()?;
 
+        log::info!("lexing block");
         let block = self.lex_block(&header)?;
 
+        log::info!("lexing log block");
         let log = if self.is_exhausted() {
             None
         } else {
