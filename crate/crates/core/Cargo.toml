@@ -2,7 +2,7 @@
 name = "spc-core"
 version = "0.1.0"
 edition = "2021"
-authors = ["Christopher Gubbin <cgubbin@sensoriumtl.com>"]
+authors = ["Christopher Gubbin <chris.gubbin@gmail.com>"]
 exclude = [".github/", "/ci/"]
 
 [lib]
