@@ -1,13 +1,13 @@
 mod flags;
-mod zerocopy_subheader;
+mod subheader;
 
 pub(crate) use flags::{DataShape, Precision};
 use miette::Diagnostic;
+pub(crate) use subheader::{LexedSubheader, Subheader, SubheaderParseError};
 use zerocopy::{
     byteorder::{F32, F64, I16, U16, U32},
     ByteOrder, Immutable, KnownLayout, TryFromBytes,
 };
-pub(crate) use zerocopy_subheader::{LexedSubheader, Subheader, SubheaderParseError};
 
 use crate::{
     block::YMode, parse::TryParse, xzwType, xzwTypeCreationError, yType, yTypeCreationError,
@@ -200,6 +200,14 @@ impl Header {
             Header::Old(header) => header.ending_x as f64,
             Header::New(header) => header.ending_x,
         }
+    }
+
+    pub(crate) fn x_points(&self) -> Vec<f64> {
+        let step = (self.ending_x() - self.starting_x()) / ((self.number_points() - 1) as f64);
+
+        (0..self.number_points())
+            .map(|i| self.starting_x() + i as f64 * step)
+            .collect()
     }
 }
 

@@ -79,7 +79,7 @@ pub(crate) struct Subheader {
     /// The integer index number of the trace subfile, where 0 refers to the first
     index_number: u16,
     /// The z-axis coordinate for this trace
-    z: f32,
+    pub(crate) z: f32,
     /// The z-axis coordinate for the next trace
     next_z: f32,
     /// The floating peak pick noise value, if the high byte is nonzero

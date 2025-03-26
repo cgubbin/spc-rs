@@ -1,7 +1,8 @@
 use std::marker::PhantomData;
 
 use zerocopy::{
-    byteorder::{F32, I16, U32}, ByteOrder, Immutable, KnownLayout, TryFromBytes,
+    byteorder::{F32, I16, U32},
+    ByteOrder, Immutable, KnownLayout, TryFromBytes,
 };
 
 use crate::{
@@ -54,6 +55,16 @@ impl<'data, E: ByteOrder> LexedXData<'data, E> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct XData(Vec<f32>);
+
+impl XData {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &f32> {
+        self.0.iter()
+    }
+}
 
 impl<E: ByteOrder> Parse for LexedXData<'_, E> {
     type Parsed = XData;
@@ -131,6 +142,28 @@ impl YData {
             Self::ThirtyTwoBitInteger(vals) => vals.len(),
             Self::Float(vals) => vals.len(),
         }
+    }
+
+    pub(crate) fn decode(&self, exponent: i32) -> Vec<f64> {
+        if let Self::Float(vals) = self {
+            return vals.clone();
+        }
+
+        let factor = match self {
+            Self::SixteenBitInteger(_) => 16,
+            Self::ThirtyTwoBitInteger(_) => 32,
+            _ => unreachable!(),
+        };
+
+        let vals: Vec<i32> = match self {
+            Self::SixteenBitInteger(vals) => vals.iter().map(|each| *each as i32).collect(),
+            Self::ThirtyTwoBitInteger(vals) => vals.clone(),
+            _ => unreachable!(),
+        };
+
+        let multiplier = 2f64.powi(exponent - factor);
+
+        vals.iter().map(|each| multiplier * *each as f64).collect()
     }
 }
 

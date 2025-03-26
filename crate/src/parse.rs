@@ -1,6 +1,7 @@
 use crate::{
-    header::{HeaderParseError, SubheaderParseError},
-    log::LogHeaderParseError,
+    block::Block,
+    header::{Header, HeaderParseError, SubheaderParseError},
+    log::{LogBlock, LogHeaderParseError},
 };
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -22,4 +23,11 @@ pub(crate) trait TryParse {
     type Parsed;
     type Error;
     fn try_parse(&self) -> Result<Self::Parsed, Self::Error>;
+}
+
+#[derive(Clone, Debug)]
+pub struct ParsedSPC {
+    pub(crate) header: Header,
+    pub(crate) block: Block,
+    pub(crate) log: Option<LogBlock>,
 }
