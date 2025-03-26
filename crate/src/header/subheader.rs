@@ -137,7 +137,7 @@ impl<E: ByteOrder> LexedSubheader<E> {
 mod test {
     use zerocopy::{LittleEndian, TryFromBytes};
 
-    use crate::header::zerocopy_subheader::GuardedLexedSubheader;
+    use crate::header::subheader::GuardedLexedSubheader;
 
     #[test]
     fn water_refractive_index_subheader_parses_correctly() {
